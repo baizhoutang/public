@@ -1,46 +1,26 @@
-function mla_surrogate_optimization_main_lightpath_find()
-    % 微透镜阵列光路参数代理模型优化主程序 
+function mla_surrogate_optimization_main_random_find()
+    % 微透镜阵列代理模型优化主程序 
     % 作者：yoka02035
-    % 创建时间：2025-05-22 
+    % 创建时间：2025-05-08 16:32:17
     
     % 设置随机数种子以确保可重复性
     rng('default');
-    rng(20250522); % 使用当前日期作为种子
+    rng(20250508);  % 使用当前日期作为种子
     
     % 清理工作区并设置日志
-    cleanup_and_setup(); 
+    cleanup_and_setup();
     
     try
-        [X, Y, dx, lambda] = prepare_static_data(); 
+        % 初始化数据和参数
+        [X, Y, dx, lambda] = prepare_static_data();
         [lb, ub, options] = setup_optimization_parameters();
+        
+        % 指定要使用的优化结果文件夹名称
+        target_folder = 'result_2025-05-23_19-45-17'; 
+        
+        % 从thickness数据重建透射率函数
+        T_mla = reconstruct_transmittance_from_file(target_folder);
     
-        result_file = 'optimization_results/random_find_result.mat'; % 示例文件名
-        if ~exist(result_file, 'file')
-            error('找不到第一阶段 (random_find) 的优化结果文件: %s', result_file);
-        end
-        
-        fprintf('正在从 %s 加载固定的MLA信息...\n', result_file);
-        loaded_vars = load(result_file, 'T_mla', 'thickness_total'); % 尝试加载这两个变量
-        
-        if isfield(loaded_vars, 'T_mla')
-            T_mla = loaded_vars.T_mla;
-            fprintf('已加载 T_mla。\n');
-        else
-            error('在 %s 中未找到变量 "T_mla"。', result_file);
-        end
-        
-        if isfield(loaded_vars, 'thickness_total')
-            thickness_total = loaded_vars.thickness_total; % thickness_total 主要用于最终保存，光路优化迭代不直接用
-            fprintf('已加载 thickness_total。\n');
-        else
-            warning('在 %s 中未找到变量 "thickness_total"。');
-            thickness_total = []; % 如果找不到，则设为空
-        end
-        
-        if isempty(T_mla)
-            error('加载的 T_mla 为空，无法继续优化。');
-        end
-        
         % 初始化最优解记录
         best_solution = struct('value', Inf, ...
                              'parameters', [], ...
@@ -48,23 +28,22 @@ function mla_surrogate_optimization_main_lightpath_find()
                              'iteration', 0, ...
                              'timestamp', '');
     
-        % 生成初始采样点 (d1, d2, d3)
-        initial_points = generate_initial_samples(lb, ub, 70); % 初始采样点数量可调整，例如70或250
+        % 生成初始采样点
+        initial_points = generate_initial_samples(lb, ub, 70);
         
         % 评估初始采样点
         initial_values = zeros(70, 1);
         initial_details = cell(70, 1);
 
-        fprintf('开始评估初始采样点 (光路参数)...\n');
+        fprintf('开始评估初始采样点...\n');
         for i = 1:70
-            % 调用适配后的评估函数，传入固定的 T_mla
             [initial_values(i), initial_details{i}] = evaluate_mla_design_wrapper(...
-                initial_points(i,:), T_mla, X, Y, dx, lambda); % evaluate_mla_design_wrapper 已被修改用于光路
-            fprintf('完成光路参数初始采样点评估 %d/70\n', i);
+                initial_points(i,:), X, Y, dx, lambda);
+            fprintf('完成初始采样点评估 %d/70\n', i);
         end
         
         % 训练初始代理模型
-        surrogate_model = train_surrogate_model(initial_points, initial_values); 
+        surrogate_model = train_surrogate_model(initial_points, initial_values);
         
         % 更新最优解
         [min_val, min_idx] = min(initial_values);
@@ -77,15 +56,15 @@ function mla_surrogate_optimization_main_lightpath_find()
         end
         
         % 主优化循环
-        max_iterations = 70; % 可调整
-        history = initialize_history(initial_points, initial_values); 
+        max_iterations = 70;
+        history = initialize_history(initial_points, initial_values);
         
         for iter = 1:max_iterations
             % 选择下一个评估点
-            next_point = select_next_point(surrogate_model, lb, ub, best_solution.value); 
+            next_point = select_next_point(surrogate_model, lb, ub, best_solution.value);
             
-            % 评估新点 (传入固定的 T_mla)
-            [next_value, next_details] = evaluate_mla_design_wrapper(next_point, T_mla, X, Y, dx, lambda); 
+            % 评估新点
+            [next_value, next_details] = evaluate_mla_design_wrapper(next_point, X, Y, dx, lambda);
             
             % 更新最优解
             if next_value < best_solution.value
@@ -94,47 +73,107 @@ function mla_surrogate_optimization_main_lightpath_find()
                 best_solution.details = next_details;
                 best_solution.iteration = iter;
                 best_solution.timestamp = datestr(now, 'yyyy-mm-dd_HH:MM:SS');
-
-                fprintf('第 %d 次迭代发现新的最优光路参数解:\n', iter);
-                fprintf('  d1: %.2f mm\n', next_point(1)*1e3);
-                fprintf('  d2: %.2f mm\n', next_point(2)*1e3);
-                fprintf('  d3: %.2f mm\n', next_point(3)*1e3);
-                fprintf('  目标函数值: %.6f\n', next_value);
+                
+                fprintf('第 %d 次迭代发现新的最优解:\n', iter);
+                fprintf('  max_shift: %.2f μm\n', next_point(1)*1e6);
+                fprintf('  max_center_shift_ratio: %.3f\n', next_point(2));
+                fprintf('  max_sag_shift: %.3f\n', next_point(3));
             end
             
             % 更新历史记录和代理模型
-            history = update_history(history, next_point, next_value); 
-            surrogate_model = update_surrogate_model(surrogate_model, next_point, next_value); 
+            history = update_history(history, next_point, next_value);
+            surrogate_model = update_surrogate_model(surrogate_model, next_point, next_value);
             
             % 保存检查点
             save_checkpoint(iter, surrogate_model, history, best_solution);
             
             % 显示进度
-            display_progress(iter, max_iterations, best_solution); 
+            display_progress(iter, max_iterations, best_solution);
             
             % 检查收敛性
-            if check_convergence(history, iter) 
-                fprintf('光路参数优化已收敛,在迭代 %d 终止\n', iter);
+            if check_convergence(history, iter)
+                fprintf('优化已收敛,在迭代 %d 终止\n', iter);
                 break;
             end
         end
         
         % 最终评估和结果保存
-        finalize_optimization_enhanced(best_solution, T_mla, thickness_total, X, Y, dx, lambda, history);
+        finalize_optimization_enhanced(best_solution, X, Y, dx, lambda, history);
         
     catch ME
         % 错误处理
-        handle_error(ME); 
+        handle_error(ME);
         rethrow(ME);
     end
 end
 
+function T_mla = reconstruct_transmittance_from_file(target_folder)
+    % 构建文件路径
+    base_path = 'E:/matlab2019a/bin/random microlens laser homogenization/mla_surrogate_optimization/optimization_results';
+    target_dir = fullfile(base_path, target_folder);
+    thickness_file = fullfile(target_dir, 'thickness_data.mat');
+    
+    % 验证文件存在
+    if ~exist(thickness_file, 'file')
+        error('未找到thickness数据文件: %s', thickness_file);
+    end
+    
+    % 加载数据
+    fprintf('正在从%s加载thickness数据...\n', thickness_file);
+    thickness_data = load(thickness_file);
+    
+    if ~isfield(thickness_data, 'thickness_total')
+        error('在thickness_data.mat中未找到thickness_total变量');
+    end
+    
+    % 获取thickness_total
+    thickness_total = thickness_data.thickness_total;
+    
+    % 验证数据
+    if isempty(thickness_total)
+        error('thickness_total为空');
+    end
+    if ~all(isfinite(thickness_total(:)))
+        error('thickness_total包含非有限值');
+    end
+    
+    % 记录原始数据信息
+    info.original_data = struct(...
+        'size', size(thickness_total), ...
+        'range', [min(thickness_total(:)), max(thickness_total(:))], ...
+        'mean', mean(thickness_total(:)), ...
+        'std', std(thickness_total(:)));
+    
+    % 设置光学参数
+    info.optical_params = struct(...
+        'n_lens', 2.4, ...      
+        'n_medium', 1.0, ...    
+        'lambda', 10.6e-6);    
+    
+    % 计算光程差(OPD)
+    OPD = (info.optical_params.n_lens - info.optical_params.n_medium) * thickness_total;
+    
+    % 计算相位延迟
+    k = 2 * pi / info.optical_params.lambda;
+    phase_delay = k * OPD;
+    
+    % 计算透射函数
+    T_mla = exp(1i * phase_delay);
+    
+    % 输出重建信息
+        % 输出基本信息
+    fprintf('透射率函数重建完成：\n');
+    fprintf('- 数据维度: %dx%d\n', size(T_mla));
+    fprintf('- 相位范围: [%.2f, %.2f] rad\n', min(angle(T_mla(:))), max(angle(T_mla(:))));
+end
+
 function cleanup_and_setup()
     close all;
-    clc; 
+    clc;
     clear all;
-    delete(gcp('nocreate')); 
+    delete(gcp('nocreate'));
     
+    % 创建必要的目录
     dirs = {'optimization_results', 'checkpoints', 'logs'};
     for i = 1:length(dirs)
         mkdir_if_not_exists(dirs{i});
@@ -151,98 +190,307 @@ function cleanup_and_setup()
     fprintf('日志文件: %s\n', log_file);
 end
 
+%% 核心内容
 function [lb, ub, options] = setup_optimization_parameters()
-    lb = [1e-3,  1e-3,  30e-3]; 
-    ub = [20e-3, 30e-3, 85e-3]; 
+    % 只优化三个随机化控制参数
+    % 1. max_shift: 网格线随机偏移最大值
+    % 2. max_center_shift_ratio: 中心偏移比例最大值
+    % 3. max_sag_shift: 矢高偏移最大值
     
-    validateattributes(lb, {'numeric'}, {'vector', 'numel', 3}, mfilename, 'lb');
-    validateattributes(ub, {'numeric'}, {'vector', 'numel', 3}, mfilename, 'ub');
+    lb = [0, 0, 0];           % 下界: [max_shift, max_center_shift_ratio, max_sag_shift]
+    ub = [225e-6, 0.5, 0.6];  % 上界
     
-    options = struct(); 
-    options.MaxIterations_BO = 70; 
+    % 验证参数维度
+    validateattributes(lb, {'numeric'}, {'vector', 'numel', 3}, 'setup_optimization_parameters', 'lb');
+    validateattributes(ub, {'numeric'}, {'vector', 'numel', 3}, 'setup_optimization_parameters', 'ub');
+    
+    % 优化选项
+    options = struct();
+    options.MaxIterations = 200;
     options.TolFun = 1e-6;
     options.Display = 'iter';
 end
 
-function samples = generate_initial_samples(lb, ub, n)
-    % 输入验证
-    validateattributes(lb, {'numeric'}, {'vector', 'numel', 3}, 'generate_initial_samples', 'lb');
-    validateattributes(ub, {'numeric'}, {'vector', 'numel', 3}, 'generate_initial_samples', 'ub');
-    validateattributes(n, {'numeric'}, {'scalar', 'positive', 'integer'}, 'generate_initial_samples', 'n');
+function [T_mla, thickness_total, recipe] = generate_random_mla(X, Y, ml_size, ml_sag, base_thickness, n, ...
+    N_array_total, max_shift, max_center_shift_ratio, max_sag_shift, lambda)
+    % N_array_total: 总单元数（例如20表示20x20阵列）
+    % 确保输入参数为double类型
+    X = double(X);
+    Y = double(Y);
+    ml_size = double(ml_size);
+    ml_sag = double(ml_sag);
+    base_thickness = double(base_thickness);
+    n = double(n);
     
-    % 确保lb和ub是行向量
-    lb = lb(:)';
-    ub = ub(:)';
+    % 计算单侧单元数（例如20x20阵列时为10）
+    N_array_side = N_array_total / 2;
+    if mod(N_array_total, 2) ~= 0
+        error('总单元数必须为偶数以确保对称性');
+    end
     
-    % 使用拉丁超立方采样
-    samples = lhsdesign(n, 3);  % 只对3个参数进行采样
+    % 初始化网格线位置（N_array_total + 1条线形成N_array_total个单元）
+    grid_size = N_array_total + 1;
+    grid_pos = zeros(grid_size, 1, 'double');
     
-    % 映射到实际参数范围
-    samples = samples .* (ub - lb) + lb;
+    % 从中心开始生成网格线（确保严格对称）
+    center_index = ceil(grid_size/2);
+    grid_pos(center_index) = 0;  % 中心线固定在0位置
     
-    % 验证生成的样本维度
-    validateattributes(samples, {'numeric'}, {'size', [n, 3]}, 'generate_initial_samples', 'samples');
+    % 向两侧生成网格线位置
+    for i = 1:N_array_side
+        % 生成随机偏移
+        current_shift = (-max_shift) + 2 * max_shift * rand();
+        
+        % 对称地添加网格线
+        grid_pos(center_index + i) = grid_pos(center_index + i - 1) + ml_size + current_shift;
+        grid_pos(center_index - i) = -(grid_pos(center_index + i));  % 严格对称
+    end
+    
+    % 使用相同的网格进行x和y方向
+    x_grid = grid_pos;
+    y_grid = grid_pos;
+    
+    % 验证对称性和中心位置
+    assert(abs(mean(x_grid)) < 1e-12, '网格生成不对称');
+    
+    % 初始化随机偏移量矩阵（N_array_total x N_array_total）
+    center_shifts_x = zeros(N_array_total, N_array_total, 'double');
+    center_shifts_y = zeros(N_array_total, N_array_total, 'double');
+    sag_shifts = zeros(N_array_total, N_array_total, 'double');
+    
+    % 初始化厚度矩阵（使用double类型）
+    [Ny, Nx] = size(X);
+    thickness_total = zeros(Ny, Nx, 'double');
+    
+    % 生成各个微透镜
+    for i = 1:N_array_total
+        for j = 1:N_array_total
+            % 计算当前单元边界（无需减去中心位置,因为grid_pos已经是中心化的）
+            x_left = x_grid(i);
+            x_right = x_grid(i+1);
+            y_bottom = y_grid(j);
+            y_top = y_grid(j+1);
+            
+            % 计算当前单元的实际尺寸
+            current_width = x_right - x_left;
+            current_height = y_top - y_bottom;
+            
+            % 根据当前单元尺寸计算最大允许的中心偏移
+            max_center_shift_x = max_center_shift_ratio * current_width;
+            max_center_shift_y = max_center_shift_ratio * current_height;
+            
+            % 生成相对于单元尺寸的随机偏移
+            center_shifts_x(i, j) = (-max_center_shift_x) + 2 * max_center_shift_x * rand();
+            center_shifts_y(i, j) = (-max_center_shift_y) + 2 * max_center_shift_y * rand();
+            sag_shifts(i, j) = (-max_sag_shift * ml_sag) + 2 * max_sag_shift * ml_sag * rand();
+            
+            % 计算单元中心并添加随机偏移
+            x_c = ((x_left + x_right) / 2) + center_shifts_x(i, j);
+            y_c = ((y_bottom + y_top) / 2) + center_shifts_y(i, j);
+            
+            % 确保矢高不小于最小值
+            current_sag = max(ml_sag + sag_shifts(i, j), 0.5 * ml_sag);
+            
+            % 创建单元掩模（使用双精度计算）
+            mask = double((X >= x_left) & (X <= x_right) & ...
+                        (Y >= y_bottom) & (Y <= y_top));
+            
+            % 计算曲率半径和局部厚度
+            avg_size = (current_width + current_height) / 2;
+            R_lens = (avg_size^2 + 4 * current_sag^2) / (8 * current_sag);
+            r_squared = (X - x_c).^2 + (Y - y_c).^2;
+            height = sqrt(max(R_lens^2 - r_squared, 0)) - (R_lens - current_sag);
+            height(~mask) = 0;
+            
+            % 累加厚度（保持double精度）
+            thickness_total = thickness_total + (height + base_thickness * mask);
+        end
+    end
+    
+    % 计算相位和复振幅透射率（保持double精度）
+    phase_mla = (n - 1) * 2 * pi / lambda * thickness_total;
+    T_mla = exp(1i * phase_mla);
+    
+    % 保存生成配方
+    recipe = struct();
+    recipe.grid_positions = {x_grid, y_grid};
+    recipe.center_shifts = {center_shifts_x, center_shifts_y};
+    recipe.sag_shifts = sag_shifts;
+    recipe.parameters = struct(...
+        'ml_size', ml_size, ...
+        'ml_sag', ml_sag, ...
+        'max_shift', max_shift, ...
+        'max_center_shift_ratio', max_center_shift_ratio, ...
+        'max_sag_shift', max_sag_shift, ...
+        'N_array_total', N_array_total, ...
+        'N_array_side', N_array_side);
 end
 
-function [uniformity, details_for_saving] = evaluate_mla_design_wrapper(x_optical, T_mla_fixed, X_grid, Y_grid, dx_val, lambda_val)
+%% 迭代优化评估函数
+function [uniformity, details_for_saving] = evaluate_mla_design_wrapper(x, X, Y, dx, lambda, show_output)
+    % 初始化返回值,确保在任何情况下都有值返回
     uniformity = inf;
     details_for_saving = struct();
-    x_optical = reshape(x_optical, 1, []); 
-
+    
+    % 确保参数为行向量
+    x = reshape(x, 1, []);
+    
     try
-        validateattributes(x_optical, {'numeric'}, {'vector', 'numel', 3, 'finite', 'real'}, mfilename, 'x_optical');
-        validateattributes(T_mla_fixed, {'numeric','logical'}, {'2d'}, mfilename, 'T_mla_fixed'); % T_mla可以是复数
-
-        d1 = x_optical(1);
-        d2 = x_optical(2);
-        d3 = x_optical(3);
+        validateattributes(x, {'numeric'}, {'vector', 'numel', 3, 'finite'}, ...
+            'evaluate_mla_design_wrapper', 'x');
+        validateattributes(X, {'numeric'}, {'2d'}, ...
+            'evaluate_mla_design_wrapper', 'X');
+        validateattributes(Y, {'numeric'}, {'2d', 'size', size(X)}, ...
+            'evaluate_mla_design_wrapper', 'Y');
+        validateattributes(dx, {'numeric'}, {'scalar', 'positive'}, ...
+            'evaluate_mla_design_wrapper', 'dx');
+        validateattributes(lambda, {'numeric'}, {'scalar', 'positive'}, ...
+            'evaluate_mla_design_wrapper', 'lambda');
         
-        % 光束传播模拟 (使用固定MLA的专用模拟函数)
-        I_out = simulate_beam_propagation_fixed_mla(T_mla_fixed, X_grid, Y_grid, dx_val, lambda_val, d1, d2, d3);
-        I_out_norm = I_out / max(I_out(:));
+        % 解析参数
+        % 固定的光学参数
+        ml_size = 576.85e-6;    % 微透镜尺寸 500μm
+        ml_sag = 11.03e-6;      % 矢高 10μm
+        d1 = 1.76e-3;          % MLA间距离 10mm
+        d2 = 11.10e-3;          % MLA到透镜距离 15mm
+        d3 = 30.63e-3;          % 透镜到目标面距离 50mm
         
-        target_energy_ratio = 0.9;
-        [L_energy_square, energy_square_mask, ~] = find_dynamic_energy_square(I_out, dx_val, target_energy_ratio, X_grid, Y_grid);
-        ideal_length = 10e-3; 
-        [area_penalty, area_stats] = calculate_area_constraint_penalty(L_energy_square, ideal_length);
-        [rms_uniformity, uniformity_stats] = calculate_uniformity_in_region(I_out_norm, energy_square_mask);
-        [edge_penalty, edge_stats] = calculate_edge_steepness_penalty(I_out_norm, energy_square_mask);
-        [energy_penalty, energy_stats] = calculate_fixed_region_energy_penalty(I_out_norm, X_grid, Y_grid);
+        % 解析随机化参数
+        max_shift = x(1);
+        max_center_shift_ratio = x(2);  % 修正变量名
+        max_sag_shift = x(3);
         
-        rms_uniformity_scaled = rms_uniformity * 5; 
-        edge_penalty_scaled = edge_penalty; 
+        % MLA 基本参数
+        base_thickness = 20e-6;  % 基底厚度
+        n = 2.4;                % 折射率
+        N_array_total = 20;     % 修正变量名,与generate_random_mla函数一致
         
-        w_rms_raw = 5.0; 
-        w_area_raw = 2.5;
-        w_edge_raw = 0.15; 
-        w_energy_raw = 2.5;
+        N_evaluations = 3;  % 每个点评估3次
+        uniformities = zeros(N_evaluations, 1);
+        details_array = cell(N_evaluations, 1);
         
-        total_weight = w_rms_raw + w_area_raw + w_edge_raw + w_energy_raw;
+        best_uniformity = inf;
+        best_details = [];
         
-        w_rms = w_rms_raw / total_weight;
-        w_area = w_area_raw / total_weight;
-        w_edge = w_edge_raw / total_weight;
-        w_energy = w_energy_raw / total_weight;
+        for i = 1:N_evaluations
+            try
+                % 使用固定参数和当前随机化参数生成MLA
+                [T_mla, thickness_total, generation_recipe] = generate_random_mla(...
+                    X, Y, ml_size, ml_sag, base_thickness, n, N_array_total, ...
+                    max_shift, max_center_shift_ratio, max_sag_shift, lambda);
+            
+                % 光束传播模拟
+                I_out = simulate_beam_propagation(T_mla, X, Y, dx, lambda, d1, d2, d3);
+                I_out_norm = I_out / max(I_out(:));
+            
+                % 计算评价指标
+                target_energy_ratio = 0.9;
+                [L_energy_square, energy_square_mask, energy_ratio] = find_dynamic_energy_square(...
+                    I_out, dx, target_energy_ratio, X, Y);
+            
+                ideal_length = 10e-3;
+                [area_penalty, area_stats] = calculate_area_constraint_penalty(L_energy_square, ideal_length);
+                [rms_uniformity, uniformity_stats] = calculate_uniformity_in_region(I_out_norm, energy_square_mask);
+                [edge_penalty, edge_stats] = calculate_edge_steepness_penalty(I_out_norm, energy_square_mask);
+                [energy_penalty, energy_stats] = calculate_fixed_region_energy_penalty(I_out_norm, X, Y);
+                rms_uniformity = rms_uniformity * 5;
+                edge_penalty = edge_penalty / 5;  % 缩小5倍
+            
+                % 更新权重设置
+                w_rms_raw = 5.0;        % 提高RMS权重
+                w_area_raw = 2.5;       % 降低面积约束权重
+                w_edge_raw = 0.15;      % 降低边缘陡峭度权重
+                w_energy_raw = 2.5;     % 保持能量控制权重
+            
+                % 计算总权重
+                total_weight = w_rms_raw + w_area_raw + w_edge_raw + w_energy_raw;
+            
+                % 归一化权重
+                w_rms = w_rms_raw / total_weight;
+                w_area = w_area_raw / total_weight;
+                w_edge = w_edge_raw / total_weight;
+                w_energy = w_energy_raw / total_weight;
+            
+                % 计算总目标值
+                curr_uniformity = w_rms * rms_uniformity/100 + ...
+                                w_area * area_penalty + ...
+                                w_edge * edge_penalty + ...
+                                w_energy * energy_penalty;
+                 
+                                % 显示评估结果
+                if nargin < 6
+                    show_output = true;  % 默认显示输出
+                end
+                
+                if show_output
+                    fprintf('\n评估结果 [%s]:\n', datestr(now, 'yyyy-mm-dd HH:MM:SS'));
+                    fprintf('  - 动态方形区域边长: %.2f mm (目标: %.2f mm)\n', L_energy_square*1e3, ideal_length*1e3);
+                    fprintf('  - RMS均匀度: %.2f%% (权重: %.3f)\n', rms_uniformity, w_rms);
+                    fprintf('  - 面积惩罚: %.4f (权重: %.3f)\n', area_penalty, w_area);
+                    fprintf('  - 边缘陡峭度惩罚: %.4f (权重: %.3f)\n', edge_penalty, w_edge);
+                    fprintf('  - 固定区域能量惩罚: %.4f (权重: %.3f)\n', energy_penalty, w_energy);
+                    fprintf('  - 总目标值: %.4f\n', curr_uniformity);
+                    
+                    % 显示随机化参数
+                    fprintf('  随机化参数:\n');
+                    fprintf('    - 网格线偏移最大值: %.2f μm\n', max_shift*1e6);
+                    fprintf('    - 中心偏移比例最大值: %.3f\n', max_center_shift_ratio);
+                    fprintf('    - 矢高偏移最大值比例: %.3f\n', max_sag_shift);
+                    
+                    % 显示当前评估次数
+                    fprintf('  评估次数: %d/%d\n', i, N_evaluations);
+                end
+            
+                % 保存当前评估的详细信息
+                curr_details = struct(...
+                    'timestamp', datestr(now, 'yyyy-mm-dd HH:MM:SS'), ...
+                    'parameters', struct(...
+                        'random_params', x, ...
+                        'fixed_params', struct(...
+                            'ml_size', ml_size, ...
+                            'ml_sag', ml_sag, ...
+                            'd1', d1, ...
+                            'd2', d2, ...
+                            'd3', d3)), ...
+                    'physical_structure', struct(...
+                        'generation_recipe', generation_recipe), ...
+                    'metrics', struct(...
+                        'rms_uniformity', rms_uniformity, ...
+                        'area_penalty', area_penalty, ...
+                        'edge_penalty', edge_penalty, ...
+                        'energy_penalty', energy_penalty), ...
+                    'objective_value', curr_uniformity);
+            
+                uniformities(i) = curr_uniformity;
+                details_array{i} = curr_details;
+            
+                % 更新最佳单次结果
+                if curr_uniformity < best_uniformity
+                    best_uniformity = curr_uniformity;
+                    best_details = curr_details;
+                end
+            
+            catch ME
+                warning('第%d次评估失败: %s', i, ME.message);
+                uniformities(i) = inf;
+                details_array{i} = struct('error', ME.message);
+            end
+        end
+    
+        % 计算平均值（用于代理模型）
+        valid_uniformities = uniformities(uniformities < inf);
+        if ~isempty(valid_uniformities)
+            uniformity = mean(valid_uniformities);  % 使用平均值作为返回值
+            details_for_saving = best_details;      % 使用最佳结果的详细信息作为返回值
+        else
+            uniformity = inf;
+            details_for_saving = struct('error', 'No valid evaluations');
+        end
         
-        uniformity = w_rms * rms_uniformity_scaled/100 + ...
-                     w_area * area_penalty + ...
-                     w_edge * edge_penalty_scaled + ...
-                     w_energy * energy_penalty;
-
-        details_for_saving = struct(...
-            'timestamp', datestr(now, 'yyyy-mm-dd HH:MM:SS'), ...
-            'parameters_optical', x_optical, ... 
-            'metrics', struct('rms_uniformity', rms_uniformity, 'area_penalty', area_penalty, ...
-                              'edge_penalty', edge_penalty, 'energy_penalty', energy_penalty, ...
-                              'L_energy_square', L_energy_square), ...
-            'stats', struct('uniformity_stats', uniformity_stats, 'area_stats', area_stats, ...
-                            'edge_stats', edge_stats, 'energy_stats', energy_stats), ...
-            'objective_value', uniformity);
-
     catch ME
-        warning('光路参数评估失败 (evaluate_mla_design_wrapper): %s', ME.message);
+        warning('评估失败: %s', ME.message);
         uniformity = inf;
-        details_for_saving = struct('error', ME.message, 'parameters_optical', x_optical);
+        details_for_saving = struct('error', ME.message);
     end
 end
 
@@ -299,46 +547,6 @@ function [square_size, mask, energy_ratio] = find_dynamic_energy_square(I_out, d
     fprintf('  - 实际能量比例: %.1f%%\n', energy_ratio*100);
 end
 
-function I_out_norm = simulate_beam_propagation_fixed_mla(T_mla, X, Y, dx, lambda, d1, d2, d3)
-    % 使用固定MLA设计的光束传播模拟 (与您之前版本一致)
-    w0 = 3.5e-3; 
-    I0 = 1; 
-    R = sqrt(X.^2 + Y.^2); 
-    U0 = sqrt(I0)*exp(-R.^2/w0^2);
-    
-    f = 50e-3; 
-    
-    U1 = U0.*T_mla;
-    U1_prop = prop_angular_spectrum(U1, dx, lambda, d1);
-    U2 = U1_prop.*T_mla; 
-    U1_propagated = prop_angular_spectrum(U2, dx, lambda, d2);
-    
-    T_lens = exp(-1i*2*pi/lambda*(X.^2 + Y.^2)/(2*f));
-    U3 = U1_propagated.*T_lens;
-    
-    U_focal = prop_angular_spectrum(U3, dx, lambda, d3);
-    
-    I_out = abs(U_focal).^2;
-    I_out_norm = single(I_out/max(I_out(:))); % 保持single输出
-end
-
-function U_out = prop_angular_spectrum(U_in, dx, lambda, z)
-    % 角谱传播函数
-    [Nx, Ny] = size(U_in);
-    dfx = 1/(Nx*dx);
-    dfy = 1/(Ny*dx);
-    
-    fx = (-Nx/2:Nx/2-1)*dfx;
-    fy = (-Ny/2:Ny/2-1)*dfy;
-    [FX, FY] = meshgrid(fx, fy);
-    
-    k = 2*pi/lambda;
-    H = exp(1i*k*z*sqrt(1 - (lambda*FX).^2 - (lambda*FY).^2));
-    H(FX.^2 + FY.^2 > 1/lambda^2) = 0;
-    
-    U_out = ifft2(fft2(U_in).*fftshift(H));
-end
-
 function [area_penalty, stats] = calculate_area_constraint_penalty(L_energy_square, ideal_length)
     % 计算相对于理想边长的比例
     length_ratio = L_energy_square / ideal_length;
@@ -382,6 +590,60 @@ function [area_penalty, stats] = calculate_area_constraint_penalty(L_energy_squa
         fprintf('  - 偏差量: %.3f\n', deviation);
         fprintf('  - 惩罚值: %.3f\n', area_penalty);
     end
+end
+
+function [energy_penalty, energy_stats] = calculate_fixed_region_energy_penalty(I_norm, X, Y)
+    % 设定固定关注区域的大小（18mm x 18mm）
+    region_half_size = 9e-3;  % 9mm（半边长）
+    
+    % 创建固定关注区域的掩模（以坐标原点为中心的18mm x 18mm方形区域）
+    core_region_mask = (abs(X) <= region_half_size) & (abs(Y) <= region_half_size);
+    
+    % 计算总能量和区域外能量
+    total_energy = sum(I_norm(:));
+    outside_energy = sum(I_norm(~core_region_mask));
+    energy_ratio = outside_energy / total_energy;
+    
+    % 设定阈值和惩罚参数
+    threshold_ratio = 0.075;  % 区域外能量不应超过总能量的5%
+    base_penalty = 20.0;     % 基础惩罚系数
+    
+    % 计算基本惩罚
+    if energy_ratio > threshold_ratio
+        % 使用指数惩罚来强烈抑制超出阈值的情况
+        excess_ratio = energy_ratio - threshold_ratio;
+        exponent = 30.0;  % 惩罚增长率
+        energy_penalty = base_penalty * exp(excess_ratio * exponent);
+    else
+        energy_penalty = 0;
+    end
+    
+    % 检查边缘峰值
+    edge_intensity = I_norm(~core_region_mask);
+    if ~isempty(edge_intensity)
+        max_edge_intensity = max(edge_intensity);
+        max_core_intensity = max(I_norm(core_region_mask));
+        
+        % 如果边缘有显著强度峰值,增加额外惩罚
+        if max_edge_intensity > 0.1 * max_core_intensity
+            intensity_penalty = base_penalty * (max_edge_intensity / max_core_intensity)^2;
+            energy_penalty = energy_penalty + intensity_penalty;
+        end
+    end
+    
+    % 收集统计信息
+    energy_stats = struct(...
+        'total_energy', total_energy, ...
+        'outside_energy', outside_energy, ...
+        'energy_ratio', energy_ratio, ...
+        'threshold_ratio', threshold_ratio, ...
+        'region_size', struct(...
+            'width', 2 * region_half_size, ...
+            'height', 2 * region_half_size), ...
+        'edge_intensity', struct(...
+            'max', max_edge_intensity, ...
+            'relative_to_core', max_edge_intensity / max_core_intensity), ...
+        'base_penalty', base_penalty);
 end
 
 function [rms_uniformity, uniformity_stats] = calculate_uniformity_in_region(I_norm, mask)
@@ -452,6 +714,188 @@ function [rms_uniformity, uniformity_stats] = calculate_uniformity_in_region(I_n
     end
 end
 
+function [center_penalty, stats] = calculate_center_peak_penalty(I_norm, mask)
+    % 计算中心亮斑惩罚
+    [ny, nx] = size(I_norm);
+    center_y = round(ny/2);
+    center_x = round(nx/2);
+    
+    % 定义中心区域（mask有效区域的20%）
+    mask_size = sqrt(sum(mask(:)));
+    center_size = round(mask_size * 0.3);
+    half_size = floor(center_size/2);
+    
+    % 创建中心区域掩模
+    center_region = false(size(mask));
+    y_range = max(1, center_y-half_size):min(ny, center_y+half_size);
+    x_range = max(1, center_x-half_size):min(nx, center_x+half_size);
+    center_region(y_range, x_range) = true;
+    
+    % 计算中心区域和整体区域的强度统计
+    center_mask = center_region & mask;
+    if sum(center_mask(:)) > 0 && sum(mask(:)) > 0
+        center_max = max(I_norm(center_mask));
+        surrounding_max = max(I_norm(mask & ~center_mask));
+        center_mean = mean(I_norm(center_mask));
+        surrounding_mean = mean(I_norm(mask & ~center_mask));
+        
+        % 计算中心峰值比例和平均值比例
+        peak_ratio = center_max / surrounding_max;
+        mean_ratio = center_mean / surrounding_mean;
+        
+        % 如果中心强度过高,施加惩罚
+        if peak_ratio > 1.5 || mean_ratio > 1.3
+            center_penalty = max((peak_ratio / 1.5)^2 - 1, (mean_ratio / 1.3)^2 - 1);
+        else
+            center_penalty = 0;
+        end
+        
+        stats = struct(...
+            'center_max', center_max, ...
+            'surrounding_max', surrounding_max, ...
+            'center_mean', center_mean, ...
+            'surrounding_mean', surrounding_mean, ...
+            'peak_ratio', peak_ratio, ...
+            'mean_ratio', mean_ratio, ...
+            'center_points', sum(center_mask(:)));
+    else
+        center_penalty = 1;  % 最大惩罚
+        stats = struct(...
+            'center_max', 0, ...
+            'surrounding_max', 0, ...
+            'center_mean', 0, ...
+            'surrounding_mean', 0, ...
+            'peak_ratio', inf, ...
+            'mean_ratio', inf, ...
+            'center_points', 0);
+    end
+end
+
+function [ring_penalty, stats] = calculate_ring_pattern_penalty(I_norm, mask)
+    % 计算环形分布惩罚
+    [ny, nx] = size(I_norm);
+    center_y = round(ny/2);
+    center_x = round(nx/2);
+    
+    % 定义中心区域（50%的mask区域）
+    mask_size = sqrt(sum(mask(:)));
+    center_size = round(mask_size * 0.5);
+    half_size = floor(center_size/2);
+    
+    % 创建中心和环形区域掩模
+    center_region = false(size(mask));
+    y_range = max(1, center_y-half_size):min(ny, center_y+half_size);
+    x_range = max(1, center_x-half_size):min(nx, center_x+half_size);
+    center_region(y_range, x_range) = true;
+    
+    % 获取有效区域的强度值
+    center_mask = center_region & mask;
+    ring_mask = mask & ~center_region;
+    
+    if sum(center_mask(:)) > 0 && sum(ring_mask(:)) > 0
+        center_mean = mean(I_norm(center_mask));
+        ring_mean = mean(I_norm(ring_mask));
+        center_max = max(I_norm(center_mask));
+        ring_max = max(I_norm(ring_mask));
+        
+        % 计算环形特征
+        ratio_mean = ring_mean / center_mean;
+        ratio_max = ring_max / center_max;
+        
+        % 如果环形强度明显高于中心,施加惩罚
+        if ratio_mean > 1.2 || ratio_max > 1.3
+            ring_penalty = max((ratio_mean / 1.2)^2 - 1, (ratio_max / 1.3)^2 - 1);
+        else
+            ring_penalty = 0;
+        end
+        
+        stats = struct(...
+            'center_mean', center_mean, ...
+            'ring_mean', ring_mean, ...
+            'center_max', center_max, ...
+            'ring_max', ring_max, ...
+            'ratio_mean', ratio_mean, ...
+            'ratio_max', ratio_max, ...
+            'center_points', sum(center_mask(:)), ...
+            'ring_points', sum(ring_mask(:)));
+    else
+        ring_penalty = 1;  % 最大惩罚
+        stats = struct(...
+            'center_mean', 0, ...
+            'ring_mean', 0, ...
+            'center_max', 0, ...
+            'ring_max', 0, ...
+            'ratio_mean', inf, ...
+            'ratio_max', inf, ...
+            'center_points', 0, ...
+            'ring_points', 0);
+    end
+end
+
+function I_out_norm = simulate_beam_propagation(T_mla, X, Y, dx, lambda, d1, d2, d3)
+    % 光学参数设置
+    w0 = 3.5e-3;        % 入射光束半径3.5mm
+    I0 = 1;
+    R = sqrt(X.^2 + Y.^2);
+    U0 = sqrt(I0)*exp(-R.^2/w0^2);
+    
+    % 傅里叶透镜焦距
+    f = 50e-3;      % 傅里叶透镜焦距50mm保持不变
+    
+    % 光束传播
+    U1 = U0.*T_mla;
+    U1_prop = prop_angular_spectrum(U1, dx, lambda, d1);
+    U2 = U1_prop.*T_mla;
+    U1_propagated = prop_angular_spectrum(U2, dx, lambda, d2);
+    
+    % 傅里叶透镜
+    T_lens = exp(-1i*2*pi/lambda*(X.^2 + Y.^2)/(2*f));
+    U3 = U1_propagated.*T_lens;
+    
+    % 传播到目标面
+    U_focal = prop_angular_spectrum(U3, dx, lambda, d3);
+    
+    % 计算归一化强度
+    I_out = abs(U_focal).^2;
+    I_out_norm = single(I_out/max(I_out(:)));
+end
+
+function U_out = prop_angular_spectrum(U_in, dx, lambda, z)
+    % 角谱传播函数
+    [Nx, Ny] = size(U_in);
+    dfx = 1/(Nx*dx);
+    dfy = 1/(Ny*dx);
+    
+    fx = (-Nx/2:Nx/2-1)*dfx;
+    fy = (-Ny/2:Ny/2-1)*dfy;
+    [FX, FY] = meshgrid(fx, fy);
+    
+    k = 2*pi/lambda;
+    H = exp(1i*k*z*sqrt(1 - (lambda*FX).^2 - (lambda*FY).^2));
+    H(FX.^2 + FY.^2 > 1/lambda^2) = 0;
+    
+    U_out = ifft2(fft2(U_in).*fftshift(H));
+end
+
+function [rms_uniformity, stats] = calculate_raw_uniformity(I_out_norm, valid_mask)
+    % 计算原始RMS均匀度（不包含任何惩罚项）
+    valid_points = I_out_norm(valid_mask);
+    
+    if ~isempty(valid_points)
+        I_mean = mean(valid_points);
+        I_std = std(valid_points);
+        stats = struct(...
+            'mean', I_mean, ...
+            'std', I_std, ...
+            'max', max(valid_points), ...
+            'min', min(valid_points));
+        rms_uniformity = (I_std/I_mean) * 100;
+    else
+        stats = struct('mean', 0, 'std', 0, 'max', 0, 'min', 0);
+        rms_uniformity = 100;
+    end
+end
+
 function [edge_penalty, edge_stats] = calculate_edge_steepness_penalty(I_norm, mask)
     % 计算边缘陡峭度惩罚
     [Gy, Gx] = gradient(I_norm);
@@ -506,454 +950,599 @@ function [edge_penalty, edge_stats] = calculate_edge_steepness_penalty(I_norm, m
     end
 end
 
-function [energy_penalty, energy_stats] = calculate_fixed_region_energy_penalty(I_norm, X, Y)
-    % 设定固定关注区域的大小（18mm x 18mm）
-    region_half_size = 9e-3;  % 9mm（半边长）
+%% 辅助函数
+
+function [uniformity, intensity, details] = evaluate_mla_design_precise(params, X, Y, dx, lambda)    
+    % 确保输入为double类型
+    params = double(params);
+    X = double(X);
+    Y = double(Y);
+    dx = double(dx);
+    lambda = double(lambda);
     
-    % 创建固定关注区域的掩模（以坐标原点为中心的18mm x 18mm方形区域）
-    core_region_mask = (abs(X) <= region_half_size) & (abs(Y) <= region_half_size);
+    % 解析参数 (只有3个随机参数,其他为固定值)
+    max_shift = params(1);
+    max_center_shift_ratio = params(2);
+    max_sag_shift = params(3);
     
-    % 计算总能量和区域外能量
-    total_energy = sum(I_norm(:));
-    outside_energy = sum(I_norm(~core_region_mask));
-    energy_ratio = outside_energy / total_energy;
+    % 固定参数
+    ml_size = 576.85e-6;    % 微透镜尺寸
+    ml_sag = 11.03e-6;       % 矢高
+    base_thickness = 20e-6; % 基础厚度
+    n = 2.4;                % 折射率
+    N_array_total = 20;     % 阵列大小 - 修改为N_array_total以匹配generate_random_mla函数参数
+    d1 = 1.76e-3;           % MLA间距离
+    d2 = 11.10e-3;          % MLA到透镜距离
+    d3 = 30.63e-3;          % 透镜到目标面距离
     
-    % 设定阈值和惩罚参数
-    threshold_ratio = 0.075;  % 区域外能量不应超过总能量的5%
-    base_penalty = 20.0;     % 基础惩罚系数
-    
-    % 计算基本惩罚
-    if energy_ratio > threshold_ratio
-        % 使用指数惩罚来强烈抑制超出阈值的情况
-        excess_ratio = energy_ratio - threshold_ratio;
-        exponent = 30.0;  % 惩罚增长率
-        energy_penalty = base_penalty * exp(excess_ratio * exponent);
-    else
-        energy_penalty = 0;
-    end
-    
-    % 检查边缘峰值
-    edge_intensity = I_norm(~core_region_mask);
-    if ~isempty(edge_intensity)
-        max_edge_intensity = max(edge_intensity);
-        max_core_intensity = max(I_norm(core_region_mask));
+    try
+        % 生成随机MLA - 使用提供的generate_random_mla函数
+        [T_mla, thickness_total, generation_details] = generate_random_mla(...
+                    X, Y, ml_size, ml_sag, base_thickness, n, N_array_total, ...
+                    max_shift, max_center_shift_ratio, max_sag_shift, lambda);
         
-        % 如果边缘有显著强度峰值,增加额外惩罚
-        if max_edge_intensity > 0.1 * max_core_intensity
-            intensity_penalty = base_penalty * (max_edge_intensity / max_core_intensity)^2;
-            energy_penalty = energy_penalty + intensity_penalty;
+        % 光束传播模拟
+        [intensity, propagation_details] = simulate_beam_propagation_precise(T_mla, X, Y, dx, lambda, d1, d2, d3);
+        
+        % 计算评估区域
+        target_energy_ratio = 1 - 1/exp(2);  % 目标能量比例
+        [square_size, mask, energy_ratio] = find_dynamic_energy_square(intensity, dx, target_energy_ratio, X, Y);
+        
+        % 计算均匀度
+        [uniformity_with_penalties, uniformity_stats] = calculate_uniformity_in_region(intensity, mask);      
+        
+        % 构建详细信息结构体
+        details = struct();
+        details.generation = generation_details;  % 使用generate_random_mla返回的详细信息
+        details.generation.T_mla = T_mla;
+        details.generation.thickness_total = thickness_total;
+        details.propagation = propagation_details;
+        details.propagation.intensity_normalized = intensity;  % 确保存储强度数据
+        details.uniformity = struct(...
+            'rms_with_penalties', uniformity_with_penalties, ...
+            'base_rms_in_region', uniformity_stats.base_rms, ... % 保存纯净RMS
+            'stats', uniformity_stats, ...
+            'evaluation_area', struct(...
+                'square_size', square_size, ...
+                'mask', mask, ...
+                'energy_ratio', energy_ratio));
+        
+        % 将均匀度转换为0-1范围
+        uniformity = uniformity_with_penalties / 100;
+        
+    catch ME
+        warning('评估失败: %s', ME.message);
+        uniformity = inf;
+        intensity = ones(size(X));
+        details = struct();
+        details.generation = struct('T_mla', [], 'thickness_total', []);
+        details.error = ME.message;
+        details.uniformity = struct(...
+            'rms_with_penalties', inf, ...
+            'base_rms_in_region', inf, ...
+            'stats', struct(), ...
+            'evaluation_area', struct(...
+                'square_size', 0, ...
+                'mask', false(size(X)), ...
+                'energy_ratio', 0));
+    end
+end
+
+function [intensity, propagation_details] = simulate_beam_propagation_precise(T_mla, X, Y, dx, lambda, d1, d2, d3)
+    % 确保输入为double类型
+    T_mla = double(T_mla);
+    X = double(X);
+    Y = double(Y);
+    dx = double(dx);
+    lambda = double(lambda);
+    d1 = double(d1);
+    d2 = double(d2);
+    d3 = double(d3);
+    
+    % 光学参数设置（使用双精度）
+    w0 = 3.5e-3;        % 入射光束半径3.5mm
+    I0 = 1.0;           % 入射光强度
+    R = sqrt(X.^2 + Y.^2);
+    U0 = sqrt(double(I0))*exp(-R.^2/w0^2);
+    
+    % 检查T_mla和U0的维度是否匹配,如果不匹配则调整
+    [ny_U0, nx_U0] = size(U0);
+    [ny_T, nx_T] = size(T_mla);
+    
+    if ny_U0 ~= ny_T || nx_U0 ~= nx_T
+        % 如果维度不匹配,则调整T_mla到U0的大小
+        warning('T_mla维度(%dx%d)与U0维度(%dx%d)不匹配,进行调整', ny_T, nx_T, ny_U0, nx_U0);
+        
+        % 如果T_mla为空或无效,创建一个单位矩阵
+        if isempty(T_mla) || ~all(isfinite(T_mla(:)))
+            T_mla = ones(size(U0));
+        else
+            % 否则进行插值调整大小
+            [X_T, Y_T] = meshgrid(linspace(-1, 1, nx_T), linspace(-1, 1, ny_T));
+            [X_U0, Y_U0] = meshgrid(linspace(-1, 1, nx_U0), linspace(-1, 1, ny_U0));
+            T_mla = interp2(X_T, Y_T, T_mla, X_U0, Y_U0, 'linear', 1);
         end
     end
     
-    % 收集统计信息
-    energy_stats = struct(...
-        'total_energy', total_energy, ...
-        'outside_energy', outside_energy, ...
-        'energy_ratio', energy_ratio, ...
-        'threshold_ratio', threshold_ratio, ...
-        'region_size', struct(...
-            'width', 2 * region_half_size, ...
-            'height', 2 * region_half_size), ...
-        'edge_intensity', struct(...
-            'max', max_edge_intensity, ...
-            'relative_to_core', max_edge_intensity / max_core_intensity), ...
-        'base_penalty', base_penalty);
+    % 傅里叶透镜焦距保持不变
+    f = 50e-3;       % 傅里叶透镜焦距
+    
+    % 光束传播（使用高精度传播函数）
+    U1 = U0.*T_mla;
+    U1_prop = prop_angular_spectrum_precise(U1, dx, lambda, d1);
+    U2 = U1_prop.*T_mla;
+    U1_propagated = prop_angular_spectrum_precise(U2, dx, lambda, d2);
+    
+    % 傅里叶透镜（使用双精度）
+    T_lens = exp(-1i*2*pi/lambda*(X.^2 + Y.^2)/(2*f));
+    U3 = U1_propagated.*T_lens;
+    
+    % 传播到目标面
+    U_focal = prop_angular_spectrum_precise(U3, dx, lambda, d3);
+    
+    % 计算归一化强度（使用双精度）
+    I_out = abs(U_focal).^2;
+    intensity = I_out/max(I_out(:));
+    
+    % 收集传播细节
+    propagation_details = struct(...
+        'input_beam', struct('w0', w0, 'I0', I0), ...
+        'distances', struct('d1', d1, 'd2', d2, 'f', f, 'd3', d3), ...
+        'grid', struct('X', X, 'Y', Y, 'dx', dx), ...
+        'wavelength', lambda, ...
+        'intensity_stats', struct(...
+            'max', max(intensity(:)), ...
+            'min', min(intensity(:)), ...
+            'mean', mean(intensity(:)), ...
+            'std', std(intensity(:))));
 end
 
-function model = train_surrogate_model(X_train, Y_train)
-    model = struct();
-    X_train = double(X_train); Y_train = double(Y_train(:)); % 确保 Y 是列向量
-    validateattributes(X_train, {'double'}, {'2d', 'size', [NaN, 3], 'finite', 'real'}, mfilename, 'X_train');
-    validateattributes(Y_train, {'double'}, {'vector', 'numel', size(X_train,1), 'finite', 'real'}, mfilename, 'Y_train');
+function samples = generate_initial_samples(lb, ub, n)
+    % 输入验证
+    validateattributes(lb, {'numeric'}, {'vector', 'numel', 3}, 'generate_initial_samples', 'lb');
+    validateattributes(ub, {'numeric'}, {'vector', 'numel', 3}, 'generate_initial_samples', 'ub');
+    validateattributes(n, {'numeric'}, {'scalar', 'positive', 'integer'}, 'generate_initial_samples', 'n');
     
-    if size(X_train,1) < size(X_train,2) + 1, warning('样本数量可能不足以训练模型'); end
-    [unique_X, ~, ic] = unique(X_train, 'rows', 'stable');
-    if size(unique_X,1) < size(X_train,1)
-        warning('训练数据中存在重复点，将取平均值');
-        Y_train = accumarray(ic, Y_train, [], @mean);
-        X_train = unique_X;
-    end
-    fprintf('开始训练代理模型 (Kriging for 3D lightpath params)...\n');
-    fprintf('  - 输入维度: %d\n', size(X_train, 2));
-    fprintf('  - 训练样本: %d\n', size(X_train, 1));
+    % 确保lb和ub是行向量
+    lb = lb(:)';
+    ub = ub(:)';
+    
+    % 使用拉丁超立方采样
+    samples = lhsdesign(n, 3);  % 只对3个参数进行采样
+    
+    % 映射到实际参数范围
+    samples = samples .* (ub - lb) + lb;
+    
+    % 验证生成的样本维度
+    validateattributes(samples, {'numeric'}, {'size', [n, 3]}, 'generate_initial_samples', 'samples');
+end
 
-    model.X_mean = mean(X_train); model.X_std = std(X_train); model.X_std(model.X_std == 0) = 1; % 避免除零
-    model.Y_mean = mean(Y_train); model.Y_std = std(Y_train); model.Y_std(model.Y_std == 0) = 1;
+function U_out = prop_angular_spectrum_precise(U_in, dx, lambda, z)
+    % 高精度角谱传播算法
+    % 使用双精度计算以获得更高精度的结果
     
-    X_norm = (X_train - model.X_mean) ./ model.X_std;
-    Y_norm = (Y_train - model.Y_mean) ./ model.Y_std;
+    % 确保输入为double类型
+    U_in = double(U_in);
+    dx = double(dx);
+    lambda = double(lambda);
+    z = double(z);
     
-    d_params = size(X_train, 2); % 应为3
-    initial_theta = ones(1, d_params);
-    model.sigma2 = 1.0; % 初始假设
+    [Nx, Ny] = size(U_in);
+    dfx = 1.0/(Nx*dx);
+    dfy = 1.0/(Ny*dx);
     
-    opt_options = optimoptions('fmincon', 'Display', 'off', 'Algorithm', 'sqp');
-    try
-        model.theta = fmincon(@(th) likelihood(th, X_norm, Y_norm), ...
-            initial_theta, [], [], [], [], 0.01*ones(1,d_params), 20*ones(1,d_params), [], opt_options);
-    catch ME_fmincon
-        warning('Kriging theta 优化失败: %s. 使用初始theta。', ME_fmincon.message);
-        model.theta = initial_theta;
+    fx = (-Nx/2:Nx/2-1)*dfx;
+    fy = (-Ny/2:Ny/2-1)*dfy;
+    [FX, FY] = meshgrid(fx, fy);
+    
+    k = 2.0*pi/lambda;
+    H = exp(1i*k*z*sqrt(1.0 - (lambda*FX).^2 - (lambda*FY).^2));
+    
+    % 添加频谱滤波
+    filter = (FX.^2 + FY.^2 <= 1.0/lambda^2);
+    H = H .* filter;
+    
+    % 使用双精度FFT
+    U_out = ifft2(fft2(U_in) .* fftshift(H));
+    
+    % 确保输出为double类型
+    U_out = double(U_out);
+end
+
+function model = train_surrogate_model(X, Y)
+    % 创建并训练Kriging代理模型
+    % 输入:
+    %   X - n_samples × n_params 矩阵,包含训练数据的输入参数
+    %   Y - n_samples × 1 向量,包含对应的响应值
+    % 输出:
+    %   model - 训练好的Kriging模型结构体
+    
+    % 初始化模型结构体
+    model = struct();
+    
+    % 确保输入是double类型
+    X = double(X);
+    Y = double(Y);
+    
+    % 输入验证
+    validateattributes(X, {'double'}, {'2d', 'size', [NaN, 3]}, ...
+        'train_surrogate_model', 'X');
+    validateattributes(X, {'double'}, {'2d', 'finite', 'real'}, ...
+        'train_surrogate_model', 'X');
+    validateattributes(Y, {'double'}, {'vector', 'finite', 'real'}, ...
+        'train_surrogate_model', 'Y');
+    
+    % 检查维度匹配
+    if size(X, 1) ~= length(Y)
+        error('输入维度不匹配: X(%d行) vs Y(%d行)', size(X, 1), length(Y));
     end
     
-    model.X = X_train; model.Y = Y_train;
-    model.X_norm = X_norm; model.Y_norm = Y_norm;
-    fprintf('代理模型训练完成。\n');
+    % 检查数据量是否足够
+    if size(X, 1) < size(X, 2) + 1
+        warning('样本数量(%d)可能不足以训练%d维模型', size(X, 1), size(X, 2));
+    end
+    
+    % 检查是否有重复点
+    [unique_X, ~, ic] = unique(X, 'rows');
+    if size(unique_X, 1) < size(X, 1)
+        warning('存在%d个重复的采样点', size(X, 1) - size(unique_X, 1));
+        % 可以选择合并重复点的响应值
+        Y_merged = accumarray(ic, Y, [], @mean);
+        X = unique_X;
+        Y = Y_merged;
+    end
+    
+    % 输出验证信息
+    fprintf('开始训练代理模型:\n');
+    fprintf('  - 输入维度: %d\n', size(X, 2));
+    fprintf('  - 训练样本: %d\n', size(X, 1));
+    
+    % 标准化输入和输出
+    model.X_mean = mean(X);
+    model.X_std = std(X);
+    model.Y_mean = mean(Y);
+    model.Y_std = std(Y);
+    
+    X_norm = (X - model.X_mean) ./ model.X_std;
+    Y_norm = (Y - model.Y_mean) ./ model.Y_std;
+    
+    % 初始化超参数
+    d = size(X, 2);
+    model.theta = ones(1, d);
+    model.sigma2 = 1.0;
+    
+    % 优化超参数
+    options = optimoptions('fmincon', ...
+        'Display', 'off', ...
+        'Algorithm', 'sqp', ...
+        'SpecifyObjectiveGradient', false);
+    
+    model.theta = fmincon(@(theta) likelihood(theta, X_norm, Y_norm), ...
+        model.theta, [], [], [], [], ...
+        0.1*ones(1,d), 10*ones(1,d), [], options);
+    
+    % 保存训练数据
+    model.X = X;
+    model.Y = Y;
+    model.X_norm = X_norm;
+    model.Y_norm = Y_norm;
+end
+
+function next_point = select_next_point(model, lb, ub, best_value)
+    validateattributes(lb, {'numeric'}, {'vector', 'numel', 3}, ...
+        'select_next_point', 'lb');
+    validateattributes(ub, {'numeric'}, {'vector', 'numel', 3}, ...
+        'select_next_point', 'ub');
+    
+    n_dims = 3;  % 更新参数维度
+    
+    % 优化参数
+    n_starts = 50;        % 随机起点数量
+    
+    % 初始化
+    best_ei = -Inf;
+    best_point = lb + (ub-lb).*rand(1, n_dims);  % 默认值
+    
+    % 优化选项
+    options = optimoptions('fmincon', ...
+        'Algorithm', 'sqp', ...
+        'Display', 'off', ...
+        'MaxFunctionEvaluations', 1000, ...
+        'MaxIterations', 500, ...
+        'SpecifyObjectiveGradient', false, ...
+        'CheckGradients', false, ...
+        'OptimalityTolerance', 1e-6, ...
+        'StepTolerance', 1e-6, ...
+        'FunctionTolerance', 1e-6);
+    
+    % 定义目标函数
+    obj_fun = @(x) safe_ei_calculation(x, model, best_value);
+    
+    % 多起点优化
+    for i = 1:n_starts
+        % 生成随机起点
+        x0 = lb + (ub-lb).*rand(1, n_dims);
+        
+        try
+            % 运行优化
+            [x_opt, ei_val] = fmincon(obj_fun, x0, [], [], [], [], lb, ub, [], options);
+            
+            % 更新最优解
+            if isfinite(ei_val) && -ei_val > best_ei
+                best_ei = -ei_val;
+                best_point = x_opt;
+            end
+        catch ME
+            warning('优化尝试 %d 失败: %s', i, ME.message);
+            continue;
+        end
+    end
+    
+    % 确保返回的点是行向量
+    best_point = best_point(:)';
+    next_point = best_point;
+end
+
+function [ei, grad] = safe_ei_calculation(x, model, best_value)
+    try
+        % 确保输入是double类型
+        x = double(x);
+        best_value = double(best_value);
+        
+        % 预测值和不确定性
+        [y_pred, s2] = predict_kriging(x, model);
+        s = sqrt(max(s2, 0));
+        
+        if s < 1e-10 || ~isfinite(y_pred) || ~isfinite(s)
+            ei = double(0);  % 确保返回double类型
+            grad = zeros(size(x), 'double');  % 明确指定double类型
+            return;
+        end
+        
+        % 计算期望改进
+        z = (best_value - y_pred) / s;
+        phi = normpdf(z);
+        Phi = normcdf(z);
+        
+        ei = double(-((best_value - y_pred) * Phi + s * phi));  % 确保返回double类型
+        
+        % 确保返回有限值
+        if ~isfinite(ei)
+            ei = double(0);
+        end
+        
+        % 如果需要梯度
+        if nargout > 1
+            grad = zeros(size(x), 'double');  % 明确指定double类型
+        end
+        
+    catch ME
+        warning('EI计算失败: %s', ME.message);
+        ei = double(0);  % 确保返回double类型
+        if nargout > 1
+            grad = zeros(size(x), 'double');  % 明确指定double类型
+        end
+    end
+end
+
+function [y_pred, s2] = predict_kriging(x, model)  
+    % 输入检查
+    if ~isstruct(model) || ~isfield(model, 'X') || ~isfield(model, 'Y')
+        error('无效的模型结构');
+    end
+    
+    try
+        % 确保输入是double类型
+        x = double(x);
+        
+        % 标准化输入
+        x_norm = (x - model.X_mean) ./ model.X_std;
+        
+        % 计算相关向量
+        n = size(model.X, 1);
+        r = zeros(n, 1, 'double');  % 明确指定double类型
+        
+        for i = 1:n
+            r(i) = exp(-sum(model.theta .* (x_norm - model.X_norm(i,:)).^2));
+        end
+        
+        % 添加数值稳定性项
+        R = r + 1e-10;
+        
+        % 计算预测均值
+        y_pred = double(model.Y_mean + model.Y_std * (R' * (model.Y_norm)));
+        
+        % 计算预测方差
+        if nargout > 1
+            s2 = double(model.sigma2 * (1 - sum(R.^2)));  % 确保返回double类型
+            s2 = max(s2, 0);  % 确保非负
+        end
+        
+    catch ME
+        warning('预测失败: %s', ME.message);
+        y_pred = double(model.Y_mean);  % 返回平均值作为预测,确保是double类型
+        s2 = double(model.sigma2);      % 返回最大不确定性,确保是double类型
+    end
+end
+
+function save_checkpoint(iter, model, history, best_solution)
+    % 验证输入
+    validateattributes(iter, {'numeric'}, {'scalar', 'positive', 'integer'}, ...
+        'save_checkpoint', 'iter');
+    
+    % 创建检查点文件名
+    filename = sprintf('E:/matlab2019a/bin/random microlens laser homogenization/mla_surrogate_optimization/checkpoints/checkpoint_iter_%d.mat', iter);
+    
+    % 准备检查点数据
+    checkpoint = struct();
+    checkpoint.iteration = iter;
+    checkpoint.model = model;
+    checkpoint.history = history;
+    checkpoint.best_solution = best_solution;  % 使用完整的best_solution结构体
+    checkpoint.timestamp = datestr(now, 'yyyy-mm-dd_HH-MM-SS');
+    
+    % 添加额外的元数据
+    checkpoint.metadata = struct();
+    checkpoint.metadata.save_date = datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss');
+    checkpoint.metadata.username = getenv('USERNAME');
+    checkpoint.metadata.matlab_version = version;
+    
+    try
+        % 保存检查点
+        save(filename, '-struct', 'checkpoint');
+        fprintf('检查点已保存: %s\n', filename);
+    catch ME
+        warning('保存检查点失败: %s\n文件: %s', ME.message, filename);
+    end
+end
+
+function converged = check_convergence(history, iter)
+    if iter < 10
+        converged = false;
+        return;
+    end
+    
+    % 检查最近10次迭代的改进
+    recent_values = history.values(end-9:end);
+    improvement = abs(recent_values(1) - recent_values(end)) / abs(recent_values(1));
+    
+    % 添加参数稳定性检查
+    recent_points = history.points(end-9:end, :);
+    param_stability = std(recent_points);
+    
+    % 分别设置不同参数的收敛阈值（3个参数）
+    thresholds = [1e-6, 1e-6, 1e-6];  % 对应3个参数
+    param_converged = all(param_stability <= thresholds);
+    
+    % 综合判断收敛性
+    converged = improvement < 1e-6 && param_converged;
+    
+    % 输出收敛信息
+    if converged
+        fprintf('优化已收敛:\n');
+        fprintf('  - 目标函数改进: %.2e\n', improvement);
+        fprintf('  - 参数稳定性: %.2e %.2e %.2e\n', param_stability);
+    end
+end
+
+function nll = likelihood(theta, X, Y)
+    % 验证theta维度为5
+    validateattributes(theta, {'double'}, {'vector', 'numel', 3}, ...
+        'likelihood', 'theta');
+    
+    % 确保输入是double类型
+    theta = double(theta);
+    X = double(X);
+    Y = double(Y);
+    
+    % 检查输入
+    if any(~isfinite(theta)) || any(theta <= 0)
+        nll = 1e10;
+        return;
+    end
+    
+    try
+        n = size(X, 1);
+        R = zeros(n, n, 'double');
+        
+        % 构建相关矩阵
+        for i = 1:n
+            for j = i:n
+                R(i,j) = exp(-sum(theta .* (X(i,:) - X(j,:)).^2));
+                R(j,i) = R(i,j);
+            end
+        end
+        
+        % 添加数值稳定性项
+        R = R + eye(n, 'double') * 1e-10;
+        
+        % Cholesky分解
+        [L, p] = chol(R, 'lower');
+        if p > 0
+            nll = 1e10;
+            return;
+        end
+        
+        % 计算常数均值（确保使用double）
+        one = ones(n, 1, 'double');
+        beta = (one' * (L' \ (L \ Y))) / (one' * (L' \ (L \ one)));
+        
+        % 计算残差和方差
+        residual = Y - one * beta;
+        sigma2 = (residual' * (L' \ (L \ residual))) / double(n);
+        
+        % 计算负对数似然
+        nll = 0.5 * (n * log(sigma2) + 2 * sum(log(diag(L))) + n);
+        nll = double(nll);
+        
+        % 确保返回有限值
+        if ~isfinite(nll)
+            nll = 1e10;
+        end
+        
+    catch ME
+        warning('likelihood计算出错: %s', ME.message);
+        nll = 1e10;
+    end
 end
 
 function model = update_surrogate_model(model, new_x, new_y)
-    new_x = double(new_x(:)'); new_y = double(new_y);
-    validateattributes(new_x, {'double'}, {'vector', 'numel', 3, 'finite', 'real'}, mfilename, 'new_x');
-    validateattributes(new_y, {'double'}, {'scalar', 'finite', 'real'}, mfilename, 'new_y');
-
-    if ~isempty(model.X) && any(all(abs(model.X - new_x) < 1e-9, 2)) % 检查重复点
-        warning('新采样点与模型中现有点过于接近，不更新模型。');
+    % 输入验证
+    validateattributes(new_x, {'numeric'}, ...
+    {'vector', 'numel', 3, 'finite', 'real'}, ...
+    'update_surrogate_model', 'new_x');
+    validateattributes(new_y, {'numeric'}, ...
+        {'scalar', 'finite', 'real'}, ...
+        'update_surrogate_model', 'new_y');
+    
+    % 确保new_x是行向量
+    new_x = new_x(:)';
+    
+    % 检查新点是否与现有点重复
+    if ~isempty(model.X) && any(all(abs(model.X - new_x) < 1e-10, 2))
+        warning('新采样点与现有点重复');
         return;
     end
     
-    X_updated = [model.X; new_x];
-    Y_updated = [model.Y; new_y];
+    % 添加新点到训练数据
+    model.X = [model.X; new_x];
+    model.Y = [model.Y; new_y];
     
-    % 重新训练模型 (简单起见，这里直接调用train_surrogate_model)
-    % 更优化的方法是增量更新，但对Kriging来说复杂
-    fprintf('使用新数据点更新代理模型...\n');
-    model = train_surrogate_model(X_updated, Y_updated); % 完全重训
-    fprintf('代理模型已更新，当前样本数: %d。\n', size(model.X,1));
-end
-
-function nll = likelihood(theta, X_norm, Y_norm) % Kriging 似然函数
-    % (此函数应与第一阶段的Kriging实现一致，确保维度匹配theta和X_norm的列数)
-    n_samples = size(X_norm, 1);
-    n_dim = size(X_norm, 2); % 应为3
-    validateattributes(theta, {'double'}, {'vector', 'numel', n_dim, 'positive'}, mfilename, 'theta');
-
-    R_corr = zeros(n_samples, n_samples);
-    for r = 1:n_samples
-        for c = r:n_samples
-            dist_sq = sum(theta .* (X_norm(r,:) - X_norm(c,:)).^2);
-            R_corr(r,c) = exp(-dist_sq);
-            if r~=c, R_corr(c,r) = R_corr(r,c); end
-        end
-    end
-    R_corr = R_corr + eye(n_samples) * 1e-8; % 为数值稳定性加nugget
-
-    try
-        L_chol = chol(R_corr, 'lower');
-    catch
-        nll = 1e10; % 如果矩阵奇异
-        return;
-    end
-
-    % 计算 beta (generalized least squares solution for mean)
-    F_basis = ones(n_samples, 1); % 常数均值基函数
-    alpha_vec = L_chol \ Y_norm;
-    beta_num = F_basis' * (L_chol' \ alpha_vec);
-    beta_den = F_basis' * (L_chol' \ (L_chol \ F_basis));
-    beta = beta_num / beta_den;
+    % 重新计算标准化参数
+    model.X_mean = mean(model.X);
+    model.X_std = std(model.X);
+    model.Y_mean = mean(model.Y);
+    model.Y_std = std(model.Y);
     
-    % 计算 sigma^2_hat
-    residuals = Y_norm - F_basis * beta;
-    sigma2_hat = (residuals' * (L_chol' \ (L_chol \ residuals))) / n_samples;
+    % 标准化所有数据
+    X_norm = (model.X - model.X_mean) ./ model.X_std;
+    Y_norm = (model.Y - model.Y_mean) ./ model.Y_std;
     
-    if sigma2_hat <= 0, sigma2_hat = 1e-8; end % 防止log(0)
-    
-    % 负对数似然
-    nll = 0.5 * (n_samples * log(sigma2_hat) + 2 * sum(log(diag(L_chol))) );
-    if ~isfinite(nll), nll = 1e10; end
-end
-
-function [y_pred_val, s2_val] = predict_kriging(x_eval, model) % Kriging 预测
-    x_eval = double(x_eval(:)');
-    validateattributes(x_eval, {'double'}, {'vector', 'numel', 3, 'finite', 'real'}, mfilename, 'x_eval');
-
-    x_eval_norm = (x_eval - model.X_mean) ./ model.X_std;
-    
-    r_vec = zeros(size(model.X,1), 1);
-    for i = 1:size(model.X,1)
-        dist_sq = sum(model.theta .* (model.X_norm(i,:) - x_eval_norm).^2);
-        r_vec(i) = exp(-dist_sq);
-    end
-    
-    % 构建相关矩阵 R (与likelihood中类似)
-    R_corr = zeros(size(model.X,1), size(model.X,1));
-    for r_idx = 1:size(model.X,1)
-        for c_idx = r_idx:size(model.X,1)
-            dist_sq_R = sum(model.theta .* (model.X_norm(r_idx,:) - model.X_norm(c_idx,:)).^2);
-            R_corr(r_idx,c_idx) = exp(-dist_sq_R);
-            if r_idx~=c_idx, R_corr(c_idx,r_idx) = R_corr(r_idx,c_idx); end
-        end
-    end
-    R_corr = R_corr + eye(size(model.X,1)) * 1e-8; % Nugget
-
-    % 预测
-    F_basis_train = ones(size(model.X,1), 1);
-    F_basis_eval = 1; % 常数均值基函数在评估点的值
+    % 优化超参数
+    d = size(model.X, 2);
+    options = optimoptions('fmincon', ...
+        'Display', 'off', ...
+        'Algorithm', 'sqp', ...
+        'SpecifyObjectiveGradient', false);
     
     try
-        R_inv = inv(R_corr);
-    catch
-        % 如果矩阵奇异，返回均值和较大方差
-        y_pred_val = model.Y_mean; 
-        s2_val = model.Y_std^2; 
-        if s2_val == 0, s2_val = 1; end % 避免方差为0
-        return;
-    end
-    
-    beta_hat = inv(F_basis_train' * R_inv * F_basis_train) * (F_basis_train' * R_inv * model.Y_norm);
-    y_pred_norm = F_basis_eval * beta_hat + r_vec' * R_inv * (model.Y_norm - F_basis_train * beta_hat);
-    y_pred_val = model.Y_mean + y_pred_norm * model.Y_std;
-    
-    % 计算 sigma^2_hat (与likelihood中一致)
-    residuals_train = model.Y_norm - F_basis_train * beta_hat;
-    sigma2_hat_val = (residuals_train' * R_inv * residuals_train) / size(model.X,1);
-    if sigma2_hat_val <=0, sigma2_hat_val = 1e-8; end
-
-    if nargout > 1
-        term_s2 = F_basis_eval - F_basis_train' * R_inv * r_vec;
-        s2_norm = sigma2_hat_val * (1 - r_vec' * R_inv * r_vec + (term_s2' * inv(F_basis_train' * R_inv * F_basis_train) * term_s2));
-        s2_val = max(0, s2_norm * model.Y_std^2); % 确保方差非负
-    end
-end
-
-function ei = safe_ei_calculation(x_ei, model_ei, best_y_ei)
-    % (与第一阶段的EI计算一致，但使用 predict_kriging)
-    try
-        [y_pred_ei, s2_ei] = predict_kriging(x_ei, model_ei);
-        s_ei = sqrt(max(s2_ei, 1e-12)); % 避免 s_ei 为0或过小
+        model.theta = fmincon(@(theta) likelihood(theta, X_norm, Y_norm), ...
+            model.theta, [], [], [], [], ...
+            0.1*ones(1,d), 10*ones(1,d), [], options);
         
-        % 从实际尺度转换回标准化尺度进行EI计算 (如果模型输出已是实际尺度，则不需要)
-        % 这里假设best_y_ei是实际尺度, y_pred_ei也是实际尺度
+        % 更新标准化数据
+        model.X_norm = X_norm;
+        model.Y_norm = Y_norm;
         
-        if s_ei < 1e-6 % 如果标准差非常小
-            if y_pred_ei < best_y_ei
-                ei = -(best_y_ei - y_pred_ei); % 期望的改进就是差值
-            else
-                ei = 0; % 没有改进
-            end
-        else
-            z_ei = (best_y_ei - y_pred_ei) / s_ei;
-            ei_val = (best_y_ei - y_pred_ei) * normcdf(z_ei) + s_ei * normpdf(z_ei);
-            ei = -max(0, ei_val); % 我们要最小化 -EI
-        end
-        if ~isfinite(ei), ei = 0; end
-    catch ME_ei
-        warning('EI 计算失败: %s. 返回EI=0.', ME_ei.message);
-        ei = 0;
-    end
-end
-
-function next_point_selected = select_next_point(model_sp, lb_sp, ub_sp, best_value_sp)
-    % (与第一阶段选择下一点逻辑一致, 确保内部n_dims=3)
-    n_dims_sp = 3; % 光路参数维度
-    n_starts_sp = 30; % 或 50，取决于计算资源
-    
-    best_ei_val = -Inf; % 因为 safe_ei_calculation 返回的是 -EI，所以我们要找它的最大值（最负）
-    next_point_selected = lb_sp + (ub_sp-lb_sp).*rand(1, n_dims_sp); % 默认值
-    
-    obj_fun_sp = @(x_param) safe_ei_calculation(x_param, model_sp, best_value_sp); % safe_ei_calculation 返回 -EI
-    
-    options_fmin_sp = optimoptions('fmincon', 'Algorithm', 'sqp', 'Display', 'off', ...
-                                 'MaxFunctionEvaluations', 500, 'MaxIterations', 200, ...
-                                 'OptimalityTolerance', 1e-7, 'StepTolerance', 1e-7, 'FunctionTolerance', 1e-7);
-    problem_sp = createOptimProblem('fmincon', 'objective', obj_fun_sp, ...
-                                  'x0', next_point_selected, 'lb', lb_sp, 'ub', ub_sp, 'options', options_fmin_sp);
-    
-    % 多起点优化，尝试找到EI的全局最优
-    temp_points = zeros(n_starts_sp, n_dims_sp);
-    temp_eis = zeros(n_starts_sp, 1);
-
-    for k_sp = 1:n_starts_sp
-        x0_sp = lb_sp + (ub_sp-lb_sp).*rand(1, n_dims_sp);
-        problem_sp.x0 = x0_sp;
-        try
-            [temp_points(k_sp,:), temp_eis(k_sp)] = fmincon(problem_sp);
-        catch ME_fmin_sp
-            warning('fmincon在选择下一点时失败 (尝试 %d/%d): %s', k_sp, n_starts_sp, ME_fmin_sp.message);
-            temp_eis(k_sp) = 0; % 若优化失败，EI设为0 (即无改进)
-        end
-    end
-    
-    [max_neg_ei, idx_best_ei] = min(temp_eis); % 因为obj_fun返回-EI，所以我们找最小值
-    
-    if temp_eis(idx_best_ei) < 0 % 确保至少有一个有效的负EI值 (即EI > 0)
-        next_point_selected = temp_points(idx_best_ei,:);
-        fprintf('通过EI选择下一个评估点 (EI=%.4g): d1=%.2fmm, d2=%.2fmm, d3=%.2fmm\n', -temp_eis(idx_best_ei), next_point_selected(1)*1e3, next_point_selected(2)*1e3, next_point_selected(3)*1e3);
-    else
-        fprintf('所有EI尝试均不优于0，随机选择一个点。\n');
-        % 如果没有找到好的EI点，可以考虑随机采样或从历史记录中探索
-        next_point_selected = lb_sp + (ub_sp-lb_sp).*rand(1, n_dims_sp);
-    end
-    next_point_selected = max(min(next_point_selected, ub_sp), lb_sp); % 确保在界内
-end
-
-
-% --- 历史记录、检查点、进度显示、收敛检查 (与第一阶段基本相同，但日志/文件名可以区分) ---
-function history_data = initialize_history(init_points, init_values)
-    history_data = struct();
-    history_data.points = init_points;
-    history_data.values = init_values(:); % 确列向量
-    history_data.best_value_history = zeros(size(init_values,1),1);
-    current_best = inf;
-    for i = 1:size(init_values,1)
-        if init_values(i) < current_best
-            current_best = init_values(i);
-        end
-        history_data.best_value_history(i) = current_best;
-    end
-    if ~isempty(init_values)
-         history_data.best_value_overall = min(init_values);
-    else
-         history_data.best_value_overall = inf;
-    end
-    history_data.timestamps = repmat(datetime('now'), size(init_values,1),1);
-    history_data.start_time = now;
-    fprintf('历史记录已初始化，包含%d个初始点，初始最优值: %.6f\n', size(init_points,1), history_data.best_value_overall);
-end
-
-function history_data = update_history(history_data, point_new, value_new)
-    history_data.points = [history_data.points; point_new(:)'];
-    history_data.values = [history_data.values; value_new];
-    history_data.best_value_history = [history_data.best_value_history; min(value_new, history_data.best_value_overall)];
-    history_data.best_value_overall = min(value_new, history_data.best_value_overall);
-    history_data.timestamps = [history_data.timestamps; datetime('now')];
-end
-
-function save_checkpoint(iter_num, model_chk, history_chk, best_solution_chk)
-    checkpoint_dir = fullfile('E:/matlab2019a/bin/random microlens laser homogenization/mla_surrogate_optimization/checkpoints');
-    mkdir_if_not_exists(checkpoint_dir);
-    filename_chk = fullfile(checkpoint_dir, sprintf('lightpath_checkpoint_iter_%d.mat', iter_num));
-    
-    checkpoint_data = struct('iteration', iter_num, 'surrogate_model', model_chk, ...
-                             'history', history_chk, 'current_best_solution', best_solution_chk, ...
-                             'timestamp', datestr(now, 'yyyy-mm-dd_HH-MM-SS'), ...
-                             'matlab_version', version, 'user', getenv('USERNAME'));
-    try
-        save(filename_chk, 'checkpoint_data');
-        fprintf('光路优化检查点已保存: %s\n', filename_chk);
-    catch ME_savechk
-        warning('保存检查点失败: %s\n文件: %s', ME_savechk.message, filename_chk);
-    end
-end
-
-function display_progress(iter_disp, max_iter_disp, best_solution_disp)
-    progress_pct = (iter_disp/max_iter_disp) * 100;
-    bar_len = 40; filled_len = round(progress_pct * bar_len / 100);
-    progress_bar = ['[' repmat('#', 1, filled_len) repmat('-', 1, bar_len-filled_len) ']'];
-    
-    % 使用 \r 清除并重写，但在 MATLAB 编辑器中可能效果不佳，命令行中可以
-    % fprintf(repmat('\b', 1, 100)); % 尝试清除之前行 (可能不完美)
-    fprintf('%s %.1f%% | Iter: %d/%d | Best Val: %.5f | Params (d1,d2,d3 in mm): %.2f, %.2f, %.2f @ %s\n', ...
-            progress_bar, progress_pct, iter_disp, max_iter_disp, best_solution_disp.value, ...
-            best_solution_disp.parameters(1)*1e3, best_solution_disp.parameters(2)*1e3, best_solution_disp.parameters(3)*1e3, ...
-            best_solution_disp.timestamp);
-end
-
-function is_converged = check_convergence(history_conv, iter_conv)
-    if iter_conv < 20 % 至少迭代20次再检查
-        is_converged = false; return;
-    end
-    
-    % 检查目标函数值的相对变化
-    lookback = 10; % 查看最近10次迭代
-    if length(history_conv.best_value_history) < lookback + 1
-        is_converged = false; return;
-    end
-    recent_best_values = history_conv.best_value_history(end-lookback:end);
-    improvement_obj = abs(recent_best_values(1) - recent_best_values(end)) / (abs(recent_best_values(1)) + eps);
-    
-    % 检查参数的稳定性
-    recent_points_conv = history_conv.points(end-lookback:end, :);
-    param_std_dev = std(recent_points_conv, 0, 1); % 按列计算标准差
-    param_relative_stability = param_std_dev ./ (range(history_conv.points,1) + eps); % 相对标准差
-
-    % 收敛阈值
-    obj_conv_threshold = 1e-5; 
-    param_conv_threshold = [1e-3, 1e-3, 1e-3]; % 对d1,d2,d3的相对稳定性阈值
-                                          
-    obj_converged = improvement_obj < obj_conv_threshold;
-    params_converged = all(param_relative_stability < param_conv_threshold);
-    
-    is_converged = obj_converged && params_converged;
-    
-    if is_converged
-        fprintf('光路参数优化已收敛 (迭代 %d):\n', iter_conv);
-        fprintf('  - 目标函数改进率 (最近%d次): %.2e (阈值: %.1e)\n', lookback, improvement_obj, obj_conv_threshold);
-        fprintf('  - 参数相对稳定性 (d1,d2,d3): %.2e, %.2e, %.2e (阈值: %.1e)\n', param_relative_stability, param_conv_threshold(1));
-    end
-end
-
-
-% --- 最终评估和保存 (针对光路优化阶段) ---
-function finalize_optimization_enhanced(best_solution_final, T_mla_final, thickness_total_final, X_final, Y_final, dx_final, lambda_final, history_final)
-    % finalize_optimization_enhanced 现在专用于光路优化阶段的最终处理
-    fprintf('\n====================== 光路参数优化最终评估与保存 ======================\n');
-    
-    fprintf('优化历史起始时间: %s\n', datestr(history_final.start_time, 'yyyy-mm-dd HH:MM:SS'));
-    fprintf('总迭代次数 (包括初始点): %d\n', size(history_final.points, 1));
-    fprintf('最优解于迭代 %d (%s) 获得，值为: %.6f\n', best_solution_final.iteration, best_solution_final.timestamp, best_solution_final.value);
-    fprintf('最优光路参数 (d1, d2, d3):\n');
-    fprintf('  d1: %.3f mm\n', best_solution_final.parameters(1)*1e3);
-    fprintf('  d2: %.3f mm\n', best_solution_final.parameters(2)*1e3);
-    fprintf('  d3: %.3f mm\n', best_solution_final.parameters(3)*1e3);
-
-    % 使用专门的精确评估函数对最优光路参数进行最终评估
-    fprintf('\n正在对最优光路参数进行最终精确评估...\n');
-    [precise_obj_value, precise_intensity_map, precise_details_struct] = ...
-        evaluate_mla_design_precise(best_solution_final.parameters, T_mla_final, X_final, Y_final, dx_final, lambda_final);
+        % 打印更新信息
+        fprintf('模型更新成功:\n');
+        fprintf('  - 当前样本数: %d\n', size(model.X, 1));
+        fprintf('  - 新点响应值: %.6f\n', new_y);
         
-    fprintf('最终精确评估结果:\n');
-    fprintf('  - 目标函数值 (精确): %.6f\n', precise_obj_value);
-    if isfield(precise_details_struct, 'uniformity') && isfield(precise_details_struct.uniformity, 'raw_rms')
-        fprintf('  - RMS均匀度 (区域内，精确): %.2f%%\n', precise_details_struct.uniformity.raw_rms);
+    catch ME
+        warning('模型更新失败: %s', ME.message);
+        % 保持原有模型不变
     end
-    if isfield(precise_details_struct, 'metrics') && isfield(precise_details_struct.metrics, 'L_energy_square')
-        fprintf('  - 动态能量方形区域边长 (精确): %.2f mm\n', precise_details_struct.metrics.L_energy_square * 1e3);
-    end
-    % 可以从 precise_details_struct 中打印更多指标
-    
-    % --- 结果保存 ---
-    result_dir_final = fullfile('E:/matlab2019a/bin/random microlens laser homogenization/mla_surrogate_optimization/optimization_results',  ...
-                           sprintf('LightpathResult_%s', datestr(now, 'yyyy-mm-dd_HH-MM-SS')));
-    mkdir_if_not_exists(result_dir_final);
-
-    optimization_data_final = struct();
-    optimization_data_final.fixed_mla_info = struct(... % 关于使用的固定MLA的信息
-        'source_T_mla', '来自第一阶段优化', ... % 可以添加第一阶段结果文件的引用
-        'T_mla_size', size(T_mla_final) ...
-        );
-    if ~isempty(thickness_total_final)
-        optimization_data_final.fixed_mla_info.thickness_total_size = size(thickness_total_final);
-    end
-
-    optimization_data_final.optimized_lightpath_parameters = best_solution_final.parameters;
-    optimization_data_final.grid_parameters = struct('X', X_final, 'Y', Y_final, 'dx', dx_final, 'lambda', lambda_final);
-    
-    optimization_data_final.optimization_process = struct(...
-        'history', history_final, ...
-        'best_solution_from_iteration', best_solution_final);
-        
-    optimization_data_final.final_precise_evaluation = struct(...
-        'objective_value', precise_obj_value, ...
-        'intensity_map', precise_intensity_map, ...
-        'detailed_metrics', precise_details_struct);
-        
-    optimization_data_final.metadata = struct(...
-        'optimization_type', 'Lightpath Optimization', ...
-        'timestamp', datestr(now, 'yyyy-mm-dd_HH-MM-SS'));
-
-    % 将 T_mla 和 thickness_total 也保存到这个结果文件中，方便查阅
-    optimization_data_final.T_mla_used = T_mla_final;
-    optimization_data_final.thickness_total_of_mla = thickness_total_final;
-
-    save_filename = fullfile(result_dir_final, 'lightpath_optimization_summary.mat');
-    save(save_filename, 'optimization_data_final', '-v7.3');
-    fprintf('光路优化最终结果已保存至: %s\n', save_filename);
-
-    % 可视化
-    plot_optical_optimization_results(precise_intensity_map, dx_final, history_final, best_solution_final.parameters, result_dir_final);
-    
-    fprintf('===========================================================================\n');
-    fprintf('光路参数优化完成！所有结果已保存。\n');
 end
 
 function mkdir_if_not_exists(dir_path)
@@ -968,137 +1557,265 @@ function mkdir_if_not_exists(dir_path)
     end
 end
 
-function [uniformity_val, intensity_map, details_struct] = evaluate_mla_design_precise(optical_params, T_mla_fixed_precise, X_precise, Y_precise, dx_precise, lambda_precise)    
-    uniformity_val = inf;
-    intensity_map = zeros(size(X_precise)); % 初始化
-    details_struct = struct('error', 'Initialization error in precise evaluation');
-    optical_params = reshape(optical_params, 1, []);
+%% 可视化部分
 
-    try
-        d1_p = optical_params(1);
-        d2_p = optical_params(2);
-        d3_p = optical_params(3);
-        
-        intensity_map_raw = simulate_beam_propagation_fixed_mla(T_mla_fixed_precise, X_precise, Y_precise, dx_precise, lambda_precise, d1_p, d2_p, d3_p);
-        intensity_map = intensity_map_raw / max(intensity_map_raw(:)); % 归一化
-        
-        target_energy_ratio_p = 0.9;
-        [L_energy_square_p, energy_square_mask_p, ~] = find_dynamic_energy_square(intensity_map_raw, dx_precise, target_energy_ratio_p, X_precise, Y_precise);
-        ideal_length_p = 10e-3;
-        [area_penalty_p, area_stats_p] = calculate_area_constraint_penalty(L_energy_square_p, ideal_length_p);
-        [rms_uniformity_p, uniformity_stats_p] = calculate_uniformity_in_region(intensity_map, energy_square_mask_p);
-        [edge_penalty_p, edge_stats_p] = calculate_edge_steepness_penalty(intensity_map, energy_square_mask_p);
-        [energy_penalty_p, energy_stats_p] = calculate_fixed_region_energy_penalty(intensity_map, X_precise, Y_precise);
-        
-        rms_uniformity_scaled_p = rms_uniformity_p * 5;
-        edge_penalty_scaled_p = edge_penalty_p ;
-        
-        w_rms_raw_p = 5.0; 
-        w_area_raw_p = 2.5; 
-        w_edge_raw_p = 0.15;
-        w_energy_raw_p = 2.5;
-        
-        total_weight_p = w_rms_raw_p + w_area_raw_p + w_edge_raw_p + w_energy_raw_p;
-        
-        w_rms_p = w_rms_raw_p / total_weight_p;
-        w_area_p = w_area_raw_p / total_weight_p;
-        w_edge_p = w_edge_raw_p / total_weight_p;
-        w_energy_p = w_energy_raw_p / total_weight_p;
-        
-        uniformity_val = w_rms_p * rms_uniformity_scaled_p/100 + ...
-                         w_area_p * area_penalty_p + ...
-                         w_edge_p * edge_penalty_scaled_p + ...
-                         w_energy_p * energy_penalty_p;
+function history = initialize_history(initial_points, initial_values)
+    history = struct();
+    history.points = initial_points;
+    history.values = initial_values;
+    history.best_value_history = min(initial_values);
+    history.iteration_times = [];
+    history.start_time = now;
+end
 
-        details_struct = struct(...
-            'timestamp', datestr(now, 'yyyy-mm-dd HH:MM:SS'), ...
-            'parameters_optical', optical_params, ...
-            'metrics', struct('rms_uniformity', rms_uniformity_p, 'area_penalty', area_penalty_p, ...
-                              'edge_penalty', edge_penalty_p, 'energy_penalty', energy_penalty_p, ...
-                              'L_energy_square', L_energy_square_p), ...
-            'stats', struct('uniformity_stats', uniformity_stats_p, 'area_stats', area_stats_p, ...
-                            'edge_stats', edge_stats_p, 'energy_stats', energy_stats_p), ...
-            'weights', struct('rms',w_rms_p,'area',w_area_p,'edge',w_edge_p,'energy',w_energy_p), ...
-            'objective_value', uniformity_val, ...
-            'raw_intensity_max', max(intensity_map_raw(:))); % 保存一些原始光强信息
-            
-        fprintf('精确评估完成: 目标值 = %.6f, RMS = %.2f%%\n', uniformity_val, rms_uniformity_p);
+function history = update_history(history, next_point, next_value)
+    history.points = [history.points; next_point];
+    history.values = [history.values; next_value];
+    history.best_value_history = [history.best_value_history; ...
+        min(next_value, history.best_value_history(end))];
+    history.iteration_times = [history.iteration_times; now];
+end
 
-    catch ME_precise
-        warning('光路参数精确评估失败 (evaluate_mla_design_precise): %s', ME_precise.message);
-        details_struct = struct('error', ME_precise.message, 'parameters_optical', optical_params);
+function display_progress(iter, max_iter, best_solution)
+    % 计算进度百分比
+    progress = (iter/max_iter) * 100;
+    
+    % 绘制简单的文本进度条
+    bar_width = 50;
+    filled = round(progress * bar_width / 100);
+    bar = ['[' repmat('=', 1, filled) repmat(' ', 1, bar_width-filled) ']'];
+    
+    % 清除当前行
+    fprintf('\r');
+    
+    % 显示进度信息
+    fprintf('%s %.1f%% ', bar, progress);
+    fprintf('迭代: %d/%d ', iter, max_iter);
+    fprintf('最优值: %.6f\n', best_solution.value);
+    
+    % 如果有最优参数,显示参数信息
+    if ~isempty(best_solution.parameters)
+        fprintf('当前最优参数：\n');
+        fprintf('  最大偏移: %.2f μm\n', best_solution.parameters(1)*1e6);
+        fprintf('  中心偏移比例: %.3f\n', best_solution.parameters(2));
+        fprintf('  矢高偏移比例: %.3f\n', best_solution.parameters(3));
+    end
+    
+    % 添加时间戳
+    if isfield(best_solution, 'timestamp')
+        fprintf('最优解更新时间: %s\n', best_solution.timestamp);
     end
 end
 
-function plot_optical_optimization_results(intensity_to_plot, dx_plot, history_plot, best_params_plot, save_dir_plot)
-    % (这个函数应该基于您之前提供的更详细的 plot_optical_optimization_results 版本进行适配)
-    % (确保它接收 save_dir_plot 以便将图片保存在正确的最终结果目录中)
-    fig_main = figure('Name', '光路参数优化 - 最终结果', 'Position', [50, 50, 1400, 800], 'Visible', 'off');
+function finalize_optimization_enhanced(best_solution, X, Y, dx, lambda, history)
+    % 增强版最终评估和结果保存函数
+    fprintf('\n开始最终评估...\n');
     
-    N_plot = size(intensity_to_plot, 1);
-    x_coords_plot = ((-N_plot/2:N_plot/2-1) * dx_plot) * 1e3; % mm
-    [X_mesh, Y_mesh] = meshgrid(x_coords_plot);
-
-    % 1. 2D 光强分布
-    subplot(2,3,1);
-    imagesc(x_coords_plot, x_coords_plot, intensity_to_plot); axis image; colormap('jet'); colorbar;
-    title('优化后光强分布'); xlabel('X (mm)'); ylabel('Y (mm)');
-    xlim([-12 12]); ylim([-12 12]); % 调整显示范围
-
-    % 2. 3D 光强表面图
-    subplot(2,3,2);
-    surf(X_mesh, Y_mesh, intensity_to_plot); shading interp; colormap('jet'); colorbar;
-    title('3D 光强表面'); xlabel('X (mm)'); ylabel('Y (mm)'); zlabel('归一化强度');
-    xlim([-12 12]); ylim([-12 12]); view(35, 45);
-
-    % 3. 水平中心剖面
-    subplot(2,3,3);
-    center_idx_plot = round(N_plot/2);
-    plot(x_coords_plot, intensity_to_plot(center_idx_plot, :), 'b-', 'LineWidth', 1.5);
-    hold on;
-    plot(x_coords_plot, intensity_to_plot(:, center_idx_plot), 'r--', 'LineWidth', 1.5);
-    hold off; grid on; legend('水平 (Y=0)', '垂直 (X=0)');
-    title('中心剖面'); xlabel('位置 (mm)'); ylabel('归一化强度');
-    xlim([-12 12]);
-
-    % 4. 优化历史 - 目标函数值
-    subplot(2,3,4);
-    plot(1:length(history_plot.values), history_plot.values, '.-', 'MarkerSize', 10);
-    hold on;
-    plot(1:length(history_plot.best_value_history), history_plot.best_value_history, 'r--', 'LineWidth', 1.5);
-    hold off; grid on; xlabel('迭代次数'); ylabel('目标函数值');
-    title('目标函数优化历史'); legend('当前值', '迄今最优值');
+    % 获取最优参数
+    best_params = best_solution.parameters;
+    best_details = best_solution.details;
     
-    % 5. 参数 d1, d2, d3 演化
-    subplot(2,3,5);
-    plot(1:size(history_plot.points,1), history_plot.points(:,1)*1e3, '.-'); hold on;
-    plot(1:size(history_plot.points,1), history_plot.points(:,2)*1e3, '.-');
-    plot(1:size(history_plot.points,1), history_plot.points(:,3)*1e3, '.-'); hold off;
-    grid on; xlabel('迭代次数'); ylabel('参数值 (mm)');
-    title('光路参数 (d1,d2,d3) 演化'); legend('d1', 'd2', 'd3');
-    
-    % 6. 参数空间散点图 (如果点数不多)
-    subplot(2,3,6);
-    if size(history_plot.points,1) > 1 && size(history_plot.points,1) < 500 % 点太多会很乱
-        scatter3(history_plot.points(:,1)*1e3, history_plot.points(:,2)*1e3, history_plot.points(:,3)*1e3, ...
-                 30, history_plot.values, 'filled');
-        hold on;
-        plot3(best_params_plot(1)*1e3, best_params_plot(2)*1e3, best_params_plot(3)*1e3, ...
-              'rp', 'MarkerSize', 12, 'MarkerFaceColor', 'r'); % 最优点
-        hold off; colormap('jet'); colorbar; view(30,20); grid on;
-        xlabel('d1 (mm)'); ylabel('d2 (mm)'); zlabel('d3 (mm)');
-        title('参数空间探索点 (颜色:目标值)');
-    else
-        text(0.1, 0.5, '参数点过多，参数空间图已省略。'); axis off;
+    num_final_evaluations = 30;
+    final_values = zeros(num_final_evaluations, 1);
+    best_final_details = []; % 初始化一个空变量用于存储最佳详细信息
+    best_final_value = inf;  % 初始化最佳值为无穷大
+
+    fprintf('对最优参数进行 %d 次评估以处理随机性...\n', num_final_evaluations);
+    for i = 1:num_final_evaluations
+        fprintf('DEBUG: 开始第 %d 次最终评估...\n', i);
+        [current_value, ~, current_details_struct] = evaluate_mla_design_precise(best_params, X, Y, dx, lambda);
+        final_values(i) = current_value; % 仍然记录每次的值,用于统计
+
+        % 如果当前评估结果比已知的最好结果还要好,则更新
+        if current_value < best_final_value
+            best_final_value = current_value;
+            best_final_details = current_details_struct; % 用当前结果覆盖之前的最佳结果
+        end
+
+        % 获取带惩罚和纯净的RMS值
+        if isstruct(current_details_struct) && isfield(current_details_struct, 'uniformity')
+            rms_with_penalties = current_details_struct.uniformity.rms_with_penalties;
+            base_rms = current_details_struct.uniformity.base_rms_in_region;
+            fprintf('DEBUG: 第 %d 次评估 - 带惩罚RMS: %.2f%%, 纯净RMS: %.2f%%\n', ...
+                i, rms_with_penalties, base_rms);
+        end
+
+        fprintf('完成评估 %d/%d\n', i, num_final_evaluations);
     end
+    
+    fprintf('\n最终评估结果:\n');
+    if isstruct(best_final_details) && isfield(best_final_details, 'uniformity')
+        fprintf('  纯净区域内RMS均匀度: %.2f%%\n', best_final_details.uniformity.base_rms_in_region);
+        fprintf('  带惩罚的RMS均匀度: %.2f%%\n', best_final_details.uniformity.rms_with_penalties);
+        if isfield(best_final_details.uniformity, 'evaluation_area')
+            fprintf('  评估区域边长: %.2f mm\n', ...
+                best_final_details.uniformity.evaluation_area.square_size * 1e3);
+            fprintf('  能量比例: %.1f%%\n', ...
+                best_final_details.uniformity.evaluation_area.energy_ratio * 100);
+        end
+    end
+    
+    % 创建结果目录
+    result_dir = sprintf('E:/matlab2019a/bin/random microlens laser homogenization/mla_surrogate_optimization/optimization_results/result_%s', ...
+        datestr(now, 'yyyy-mm-dd_HH-MM-SS'));
+    mkdir_if_not_exists(result_dir);
+    
+    % 创建更完整的结果结构体
+    final_result = struct(...
+        'best_parameters', best_params, ...
+        'performance_metrics', struct(...
+            'base_rms', best_final_details.uniformity.base_rms_in_region, ...
+            'rms_with_penalties', best_final_details.uniformity.rms_with_penalties, ...
+            'evaluation_area', best_final_details.uniformity.evaluation_area), ...
+        'best_value', best_final_value, ...
+        'best_details', best_final_details, ...
+        'statistics', struct(...
+            'mean', mean(final_values), ...
+            'std', std(final_values), ...
+            'all_values', final_values), ...
+        'optimization_history', history, ...
+        'timestamp', datestr(now, 'yyyy-mm-dd_HH:MM:SS'));
+    
+    % 保存厚度信息
+    if isstruct(best_final_details) && isfield(best_final_details, 'generation')
+        if isfield(best_final_details.generation, 'thickness_total')
+            thickness_total = best_final_details.generation.thickness_total;
+            fprintf('成功获取厚度分布信息,大小: %s\n', mat2str(size(thickness_total)));
+            
+            thickness_data = struct(...
+                'thickness_total', thickness_total, ...
+                'X', X, ...
+                'Y', Y, ...
+                'dx', dx, ...
+                'parameters', best_final_details.generation.parameters, ...
+                'generation_recipe', best_final_details.generation);
+            
+            % 保存厚度数据
+            save(fullfile(result_dir, 'thickness_data.mat'), 'thickness_data');
+            csvwrite(fullfile(result_dir, 'thickness_matrix.csv'), thickness_total);
+            
+            final_result.thickness_data = thickness_data;
+            fprintf('厚度分布数据已保存\n');
+        else
+            warning('无法获取厚度分布信息');
+        end
+    end
+    
+    % 添加制备相关信息
+    final_result.fabrication_info = struct(...
+        'wavelength', lambda, ...
+        'parameters', best_params, ...
+        'description', '微透镜阵列随机化优化结果,用于实际制备');
+    
+    % 保存结果
+    save_path = fullfile(result_dir, 'optimization_result.mat');
+    save(save_path, 'final_result', '-v7.3');
+    fprintf('结果已保存至: %s\n', save_path);
+    
+    % 保存最佳解决方案的详细信息
+    save(fullfile(result_dir, 'best_solution.mat'), 'best_solution', 'history');
+    
+    % 可视化最佳设计
+    visualize_best_design(best_params, best_final_details, X, Y, dx, lambda, result_dir);
+    
+    fprintf('\n优化完成,所有结果已保存到: %s\n', result_dir);
+end
 
-    sgtitle(sprintf('光路参数优化结果 - 最优目标值: %.4f\nd1=%.2fmm, d2=%.2fmm, d3=%.2fmm', ...
-        min(history_plot.values), best_params_plot(1)*1e3, best_params_plot(2)*1e3, best_params_plot(3)*1e3 ), 'FontSize', 12, 'FontWeight', 'bold');
-
-    % 保存图像
-    if ~exist(save_dir_plot, 'dir'), mkdir_if_not_exists(save_dir_plot); end
-    saveas(fig_main, fullfile(save_dir_plot, 'Lightpath_Optimization_Summary.png'));
-    try saveas(fig_main, fullfile(save_dir_plot, 'Lightpath_Optimization_Summary.fig')); catch; end
-    close(fig_main);
-    fprintf('光路优化结果图表已保存至: %s\n', save_dir_plot);
+function visualize_best_design(best_params, best_final_details, X, Y, dx, lambda, result_dir)
+    % 可视化最佳设计
+    fprintf('\n生成最佳设计可视化...\n');
+    
+    % 提取强度分布 - 增加错误处理和备选路径
+    if isstruct(best_final_details) && isfield(best_final_details, 'propagation') && ...
+       isfield(best_final_details.propagation, 'intensity_normalized')
+        % 原始路径
+        fprintf('从 propagation.intensity_normalized 获取强度分布\n');
+        I_norm = best_final_details.propagation.intensity_normalized;
+    elseif isstruct(best_final_details) && isfield(best_final_details, 'intensity')
+        % 备选路径1：直接从intensity字段获取
+        fprintf('从 intensity 字段获取强度分布\n');
+        I_norm = best_final_details.intensity;
+    elseif isstruct(best_final_details) && isfield(best_final_details, 'generation') && ...
+           isfield(best_final_details.generation, 'T_mla')
+        % 备选路径2：如果有T_mla,重新计算强度分布
+        fprintf('从 T_mla 重新计算强度分布\n');
+        T_mla = best_final_details.generation.T_mla;
+        [I_norm, ~] = simulate_beam_propagation_precise(T_mla, X, Y, dx, lambda, 1.82e-3, 19.63e-3, 57.82e-3);
+    else
+        % 无法获取强度分布,创建空数据
+        warning('无法获取强度分布数据,使用随机数据进行可视化');
+        I_norm = rand(size(X));
+    end
+    
+    % 创建图形窗口
+    figure('Position', [100, 100, 1200, 800]);
+    
+    % 绘制强度分布
+    subplot(2, 2, 1);
+    imagesc(X(1,:)*1e3, Y(:,1)*1e3, I_norm);
+    axis image;
+    colorbar;
+    title('最佳设计强度分布');
+    xlabel('X (mm)');
+    ylabel('Y (mm)');
+    
+    % 绘制有效区域掩模 - 增加错误处理
+    subplot(2, 2, 2);
+    if isstruct(best_final_details) && isfield(best_final_details, 'uniformity') && ...
+       isfield(best_final_details.uniformity, 'evaluation_area') && ...
+       isfield(best_final_details.uniformity.evaluation_area, 'mask')
+        mask = best_final_details.uniformity.evaluation_area.mask;
+        square_size = best_final_details.uniformity.evaluation_area.square_size;
+        title_text = sprintf('有效区域 (%.2f mm)', square_size*1e3);
+    else
+        % 创建默认掩模
+        [ny, nx] = size(I_norm);
+        center_y = round(ny/2);
+        center_x = round(nx/2);
+        radius = min(center_x, center_y) * 0.5;
+        [XX, YY] = meshgrid(1:nx, 1:ny);
+        mask = ((XX-center_x).^2 + (YY-center_y).^2) <= radius^2;
+        title_text = '估计有效区域';
+    end
+    imagesc(X(1,:)*1e3, Y(:,1)*1e3, mask);
+    axis image;
+    colorbar;
+    title(title_text);
+    xlabel('X (mm)');
+    ylabel('Y (mm)');
+    
+    % 绘制强度剖面
+    subplot(2, 2, 3);
+    [ny, nx] = size(I_norm);
+    center_y = round(ny/2);
+    center_x = round(nx/2);
+    plot(X(center_y,:)*1e3, I_norm(center_y,:), 'b-', 'LineWidth', 1.5);
+    hold on;
+    plot(Y(:,center_x)*1e3, I_norm(:,center_x), 'r--', 'LineWidth', 1.5);
+    legend('X剖面', 'Y剖面');
+    title('中心剖面');
+    xlabel('位置 (mm)');
+    ylabel('归一化强度');
+    grid on;
+    
+    % 绘制3D表面图
+    subplot(2, 2, 4);
+    valid_region = I_norm .* mask;
+    surf(X*1e3, Y*1e3, valid_region);
+    shading interp;
+    colorbar;
+    title('有效区域3D强度分布');
+    xlabel('X (mm)');
+    ylabel('Y (mm)');
+    zlabel('归一化强度');
+    
+    % 保存图形
+    saveas(gcf, fullfile(result_dir, sprintf('best_random_design_%s.png', ...
+        datestr(now, 'yyyy-mm-dd_HH-MM-SS'))));
+    
+    % 显示最终参数
+    fprintf('\n最终随机化参数:\n');
+    fprintf('  - 最大位移: %.2f μm\n', best_params(1)*1e6);
+    fprintf('  - 最大中心偏移比例: %.3f\n', best_params(2));
+    fprintf('  - 最大矢高偏移比例: %.3f\n', best_params(3));
 end
