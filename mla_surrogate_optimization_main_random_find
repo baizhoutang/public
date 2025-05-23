@@ -114,7 +114,7 @@ function cleanup_and_setup()
     end
     
     % 设置日志
-    log_file = sprintf('logs/optimization_%s.txt', ...
+    log_file = sprintf('E:/matlab2019a/bin/random microlens laser homogenization/mla_surrogate_optimization/logs/optimization_%s.txt', ...
         datestr(now, 'yyyy-mm-dd_HH-MM-SS'));
     diary(log_file);
     
@@ -250,7 +250,6 @@ function [T_mla, thickness_total, recipe] = generate_random_mla(X, Y, ml_size, m
     recipe.grid_positions = {x_grid, y_grid};
     recipe.center_shifts = {center_shifts_x, center_shifts_y};
     recipe.sag_shifts = sag_shifts;
-    recipe.thickness_total = thickness_total;  % 保存厚度分布
     recipe.parameters = struct(...
         'ml_size', ml_size, ...
         'ml_sag', ml_sag, ...
@@ -262,7 +261,6 @@ function [T_mla, thickness_total, recipe] = generate_random_mla(X, Y, ml_size, m
 end
 
 %% 迭代优化评估函数
-
 function [uniformity, details_for_saving] = evaluate_mla_design_wrapper(x, X, Y, dx, lambda, show_output)
     % 初始化返回值,确保在任何情况下都有值返回
     uniformity = inf;
@@ -285,11 +283,11 @@ function [uniformity, details_for_saving] = evaluate_mla_design_wrapper(x, X, Y,
         
         % 解析参数
         % 固定的光学参数
-        ml_size = 528.85e-6;    % 微透镜尺寸 500μm
-        ml_sag = 7.68e-6;      % 矢高 10μm
-        d1 = 1.82e-3;          % MLA间距离 10mm
-        d2 = 19.63e-3;          % MLA到透镜距离 15mm
-        d3 = 57.82e-3;          % 透镜到目标面距离 50mm
+        ml_size = 576.85e-6;    % 微透镜尺寸 500μm
+        ml_sag = 11.03e-6;      % 矢高 10μm
+        d1 = 1.76e-3;          % MLA间距离 10mm
+        d2 = 11.10e-3;          % MLA到透镜距离 15mm
+        d3 = 30.63e-3;          % 透镜到目标面距离 50mm
         
         % 解析随机化参数
         max_shift = x(1);
@@ -324,7 +322,7 @@ function [uniformity, details_for_saving] = evaluate_mla_design_wrapper(x, X, Y,
                 [L_energy_square, energy_square_mask, energy_ratio] = find_dynamic_energy_square(...
                     I_out, dx, target_energy_ratio, X, Y);
             
-                ideal_length = 12e-3;
+                ideal_length = 10e-3;
                 [area_penalty, area_stats] = calculate_area_constraint_penalty(L_energy_square, ideal_length);
                 [rms_uniformity, uniformity_stats] = calculate_uniformity_in_region(I_out_norm, energy_square_mask);
                 [edge_penalty, edge_stats] = calculate_edge_steepness_penalty(I_out_norm, energy_square_mask);
@@ -389,8 +387,6 @@ function [uniformity, details_for_saving] = evaluate_mla_design_wrapper(x, X, Y,
                             'd2', d2, ...
                             'd3', d3)), ...
                     'physical_structure', struct(...
-                        'thickness_total', thickness_total, ...
-                        'T_mla', T_mla, ...
                         'generation_recipe', generation_recipe), ...
                     'metrics', struct(...
                         'rms_uniformity', rms_uniformity, ...
@@ -490,8 +486,8 @@ function [area_penalty, stats] = calculate_area_constraint_penalty(L_energy_squa
     length_ratio = L_energy_square / ideal_length;
     
     % 设定可接受的范围（0.65-1.5倍）
-    min_acceptable = 0.65;
-    max_acceptable = 1.5;
+    min_acceptable = 0.5;
+    max_acceptable = 1.65;
     
     % 计算惩罚
     if length_ratio < min_acceptable
@@ -904,14 +900,14 @@ function [uniformity, intensity, details] = evaluate_mla_design_precise(params, 
     max_sag_shift = params(3);
     
     % 固定参数
-    ml_size = 528.85e-6;    % 微透镜尺寸
-    ml_sag = 7.68e-6;       % 矢高
+    ml_size = 576.85e-6;    % 微透镜尺寸
+    ml_sag = 11.03e-6;       % 矢高
     base_thickness = 20e-6; % 基础厚度
     n = 2.4;                % 折射率
     N_array_total = 20;     % 阵列大小 - 修改为N_array_total以匹配generate_random_mla函数参数
-    d1 = 1.82e-3;           % MLA间距离
-    d2 = 19.63e-3;          % MLA到透镜距离
-    d3 = 57.82e-3;          % 透镜到目标面距离
+    d1 = 1.76e-3;           % MLA间距离
+    d2 = 11.10e-3;          % MLA到透镜距离
+    d3 = 30.63e-3;          % 透镜到目标面距离
     
     try
         % 生成随机MLA - 使用提供的generate_random_mla函数
@@ -1309,7 +1305,7 @@ function save_checkpoint(iter, model, history, best_solution)
         'save_checkpoint', 'iter');
     
     % 创建检查点文件名
-    filename = sprintf('checkpoints/checkpoint_iter_%d.mat', iter);
+    filename = sprintf('E:/matlab2019a/bin/random microlens laser homogenization/mla_surrogate_optimization/checkpoints/checkpoint_iter_%d.mat', iter);
     
     % 准备检查点数据
     checkpoint = struct();
@@ -1545,129 +1541,6 @@ function display_progress(iter, max_iter, best_solution)
     end
 end
 
-% function finalize_optimization_enhanced(best_solution, X, Y, dx, lambda, history)
-%     % 增强版最终评估和结果保存函数
-%     fprintf('\n开始最终评估...\n');
-%     
-%     % 获取最优参数
-%     best_params = best_solution.parameters;
-%     best_details = best_solution.details;
-%     
-%     num_final_evaluations = 30;
-%     final_values = zeros(num_final_evaluations, 1);
-%     final_details_cell = cell(num_final_evaluations, 1); % 更名以区分
-% 
-%     fprintf('对最优参数进行 %d 次评估以处理随机性...\n', num_final_evaluations);
-%     for i = 1:num_final_evaluations
-%         fprintf('DEBUG: 开始第 %d 次最终评估...\n', i);
-%         [current_value, ~, current_details_struct] = evaluate_mla_design_precise(best_params, X, Y, dx, lambda); % 使用新变量名
-%         final_values(i) = current_value;
-%         final_details_cell{i} = current_details_struct; % 使用新变量名
-% 
-%         fprintf('DEBUG: 第 %d 次评估完成。返回的 uniformity = %.4f\n', i, current_value);
-%         fprintf('DEBUG: 第 %d 次评估返回的 details 结构:\n', i);
-%         disp(current_details_struct); % 显示结构
-%         if isstruct(current_details_struct)
-%             fprintf('DEBUG: 第 %d 次评估返回的 details 字段:\n', i);
-%             disp(fieldnames(current_details_struct)); % 显示字段名
-%         else
-%             fprintf('DEBUG: 第 %d 次评估返回的 details 不是结构体!\n', i);
-%         end
-%         % 原有的打印评估完成信息
-%         fprintf('完成评估 %d/%d: 均匀度 = %.2f%%\n', i, num_final_evaluations, current_value*100); 
-%     end
-%     
-%     mean_value = mean(final_values);
-%     std_value = std(final_values);
-%     [best_final_value, best_idx] = min(final_values);
-%     best_final_details = final_details_cell{best_idx}; % 使用新变量名
-% 
-%     fprintf('DEBUG: 最终选取的 best_final_details (来自第 %d 次评估):\n', best_idx);
-%     disp(best_final_details); % 再次显示最终选中的结构
-%     if isstruct(best_final_details)
-%         fprintf('DEBUG: 最终选取的 best_final_details 字段:\n');
-%         disp(fieldnames(best_final_details));
-%     else
-%         fprintf('DEBUG: 最终选取的 best_final_details 不是结构体!\n');
-%     end
-%     
-%     fprintf('\n最终评估结果:\n');
-%     fprintf('  平均目标值: %.4f ± %.4f\n', mean_value, std_value);
-%     fprintf('  最佳目标值: %.4f\n', best_final_value);
-%     
-%     % 创建结果目录
-%     result_dir = sprintf('optimization_results/result_%s', ...
-%         datestr(now, 'yyyy-mm-dd_HH-MM-SS'));
-%     mkdir_if_not_exists(result_dir);
-%     
-%     % 创建更完整的结果结构体,确保包含厚度信息
-%     final_result = struct(...
-%         'best_parameters', best_params, ...
-%         'best_value', best_final_value, ...
-%         'best_details', best_final_details, ...
-%         'statistics', struct(...
-%             'mean', mean_value, ...
-%             'std', std_value, ...
-%             'all_values', final_values), ...
-%         'optimization_history', history, ...
-%         'timestamp', datestr(now, 'yyyy-mm-dd_HH:MM:SS'));
-%     
-%     % 确保厚度信息被正确保存
-%     if isstruct(best_final_details) && isfield(best_final_details, 'generation')
-%         if isfield(best_final_details.generation, 'thickness_total')
-%             thickness_total = best_final_details.generation.thickness_total;
-%             fprintf('成功获取厚度分布信息,大小: %s\n', mat2str(size(thickness_total)));
-%             final_result.thickness_data = struct(...
-%                 'thickness_total', thickness_total, ...
-%                 'grid', struct('X', X, 'Y', Y, 'dx', dx));
-%             current_generation_details = best_final_details.generation; % 这就是完整的 recipe/generation_details
-%             
-%             % 保存厚度分布数据到单独的文件，方便后期重建
-%             thickness_data = struct(...
-%                 'thickness_total', thickness_total, ...
-%                 'X', X, ...
-%                 'Y', Y, ...
-%                 'dx', dx, ...
-%                 'parameters', current_generation_details.parameters, ...
-%                 'generation_recipe', current_generation_details); 
-%             
-%             % 保存为MAT文件
-%             save(fullfile(result_dir, 'thickness_data.mat'), 'thickness_data');
-%             
-%             % 同时保存为CSV文件，方便其他软件导入
-%             csvwrite(fullfile(result_dir, 'thickness_matrix.csv'), thickness_total);
-%             
-%             fprintf('厚度分布数据已保存到: %s\n', fullfile(result_dir, 'thickness_data.mat'));
-%             fprintf('厚度矩阵已保存到CSV: %s\n', fullfile(result_dir, 'thickness_matrix.csv'));
-%         else
-%             warning('无法获取厚度分布信息,这可能会影响后期重构和制备');
-%             final_result.thickness_data = struct('thickness_total', [], 'grid', struct('X', X, 'Y', Y, 'dx', dx));
-%         end
-%     else
-%         warning('best_final_details结构不完整,无法获取厚度信息');
-%         final_result.thickness_data = struct('thickness_total', [], 'grid', struct('X', X, 'Y', Y, 'dx', dx));
-%     end
-%     
-%     % 添加制备相关信息
-%     final_result.fabrication_info = struct(...
-%         'wavelength', lambda, ...
-%         'parameters', best_params, ...
-%         'description', '微透镜阵列随机化优化结果,用于实际制备');
-%     
-%     % 保存结果
-%     save_path = fullfile(result_dir, 'optimization_result.mat');
-%     save(save_path, 'final_result', '-v7.3');
-%     fprintf('结果已保存至: %s\n', save_path);
-%     
-%     % 保存最佳解决方案的详细信息
-%     save(fullfile(result_dir, 'best_solution.mat'), 'best_solution', 'history');
-%     
-%     % 可视化最佳设计
-%     visualize_best_design(best_params, best_final_details, X, Y, dx, lambda, result_dir);
-%     
-%     fprintf('\n优化完成,所有结果已保存到: %s\n', result_dir);
-% end
-
 function finalize_optimization_enhanced(best_solution, X, Y, dx, lambda, history)
     % 增强版最终评估和结果保存函数
     fprintf('\n开始最终评估...\n');
@@ -1678,14 +1551,20 @@ function finalize_optimization_enhanced(best_solution, X, Y, dx, lambda, history
     
     num_final_evaluations = 30;
     final_values = zeros(num_final_evaluations, 1);
-    final_details_cell = cell(num_final_evaluations, 1);
+    best_final_details = []; % 初始化一个空变量用于存储最佳详细信息
+    best_final_value = inf;  % 初始化最佳值为无穷大
 
     fprintf('对最优参数进行 %d 次评估以处理随机性...\n', num_final_evaluations);
     for i = 1:num_final_evaluations
         fprintf('DEBUG: 开始第 %d 次最终评估...\n', i);
         [current_value, ~, current_details_struct] = evaluate_mla_design_precise(best_params, X, Y, dx, lambda);
-        final_values(i) = current_value;
-        final_details_cell{i} = current_details_struct;
+        final_values(i) = current_value; % 仍然记录每次的值，用于统计
+
+        % 如果当前评估结果比已知的最好结果还要好，则更新
+        if current_value < best_final_value
+            best_final_value = current_value;
+            best_final_details = current_details_struct; % 用当前结果覆盖之前的最佳结果
+        end
 
         % 获取带惩罚和纯净的RMS值
         if isstruct(current_details_struct) && isfield(current_details_struct, 'uniformity')
@@ -1697,10 +1576,6 @@ function finalize_optimization_enhanced(best_solution, X, Y, dx, lambda, history
 
         fprintf('完成评估 %d/%d\n', i, num_final_evaluations);
     end
-    
-    % 使用带惩罚的RMS选择最佳结果
-    [best_final_value, best_idx] = min(final_values);
-    best_final_details = final_details_cell{best_idx};
     
     fprintf('\n最终评估结果:\n');
     if isstruct(best_final_details) && isfield(best_final_details, 'uniformity')
@@ -1715,7 +1590,7 @@ function finalize_optimization_enhanced(best_solution, X, Y, dx, lambda, history
     end
     
     % 创建结果目录
-    result_dir = sprintf('optimization_results/result_%s', ...
+    result_dir = sprintf('E:/matlab2019a/bin/random microlens laser homogenization/mla_surrogate_optimization/optimization_results/result_%s', ...
         datestr(now, 'yyyy-mm-dd_HH-MM-SS'));
     mkdir_if_not_exists(result_dir);
     
